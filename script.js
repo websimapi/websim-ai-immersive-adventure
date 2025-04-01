@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 
 // --- Configuration ---
-const INITIAL_PROMPT = "A tranquil wilderness campsite at dusk, featuring a crackling campfire casting warm light on nearby tents nestled under towering pine trees. The soft rustling of leaves can be heard in a gentle breeze under a twilight sky.";
+const INITIAL_PROMPT = "A futuristic cyberpunk cityscape at night, filled with towering skyscrapers adorned with vibrant, glowing neon signs and advertisements. Flying vehicles zip between buildings under a dark, rainy sky reflected in wet streets.";
 const IMAGE_WIDTH = 3840;
 const IMAGE_HEIGHT = 2160;
 const CAMERA_FOV = 75; // Field of View
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1000;
 const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
+const NEON_SATURATION_THRESHOLD = 0.75; // Min saturation for neon effect
+const NEON_LIGHTNESS_THRESHOLD = 0.5; // Min lightness for neon effect
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
@@ -24,6 +26,82 @@ let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
 let panoramaMesh; // To hold the sphere mesh
 let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
+let clock = new THREE.Clock(); // Clock for time uniform
+let shaderMaterial; // Material for neon effect
+
+// --- Shader Definitions ---
+const vertexShader = `
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+const fragmentShader = `
+    uniform sampler2D panoramaTexture;
+    uniform float time;
+    varying vec2 vUv;
+
+    // Constants for neon detection
+    const float NEON_SAT_THRESHOLD = ${NEON_SATURATION_THRESHOLD.toFixed(2)};
+    const float NEON_LUM_THRESHOLD = ${NEON_LIGHTNESS_THRESHOLD.toFixed(2)};
+
+    // --- HSL Conversion ---
+    // Function to convert RGB to HSL (approximated, good enough for thresholding)
+    vec3 rgb2hsl(vec3 color) {
+        float maxC = max(color.r, max(color.g, color.b));
+        float minC = min(color.r, min(color.g, color.b));
+        float delta = maxC - minC;
+        float h = 0.0;
+        float s = 0.0;
+        float l = (maxC + minC) / 2.0;
+
+        if (delta > 0.0001) { // Check against a small epsilon
+            s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC);
+            if (maxC == color.r) {
+                h = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
+            } else if (maxC == color.g) {
+                h = (color.b - color.r) / delta + 2.0;
+            } else { // maxC == color.b
+                h = (color.r - color.g) / delta + 4.0;
+            }
+            h /= 6.0;
+        }
+        return vec3(h, s, l);
+    }
+
+    // --- Main Fragment Shader ---
+    void main() {
+        vec4 texColor = texture2D(panoramaTexture, vUv);
+        vec3 hsl = rgb2hsl(texColor.rgb);
+
+        // Check if the color qualifies as "neon"
+        bool isNeon = (hsl.s >= NEON_SAT_THRESHOLD && hsl.l >= NEON_LUM_THRESHOLD);
+
+        vec3 finalColor = texColor.rgb;
+
+        if (isNeon) {
+            // Apply a subtle pulsing/shifting effect for neon colors
+            // Combine time and vertical position for variation
+            float pulseSpeed = 2.0 + hsl.h * 3.0; // Vary speed based on hue
+            float pulseIntensity = 0.05 + (hsl.s - NEON_SAT_THRESHOLD) * 0.1; // More saturated = more intense pulse
+             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue
+            float pulse = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.h * 1.5) * pulseIntensity + (1.0 - pulseIntensity * 0.5);
+
+             // Modulate brightness
+            finalColor = texColor.rgb * pulse;
+
+             // Optional: Add a very subtle hue shift (can be performance intensive if using HSL->RGB conversion)
+             // float hueShiftAmount = sin(time * 0.5 + vUv.x * 5.0) * 0.01; // Slow horizontal shift
+             // vec3 shiftedHsl = vec3(mod(hsl.x + hueShiftAmount, 1.0), hsl.y, hsl.z * pulse);
+             // finalColor = hsl2rgb(shiftedHsl); // Requires hsl2rgb function
+        }
+
+        gl_FragColor = vec4(finalColor, texColor.a);
+    }
+`;
+
 
 // --- Initialization ---
 async function init() {
@@ -34,8 +112,6 @@ async function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
-    // Position camera slightly forward; it will look at the center by default.
-    // We rotate the camera itself, not move it around.
     camera.position.set(0, 0, 0.1);
     camera.rotation.order = 'YXZ'; // Set rotation order early
     camera.rotation.y = totalYaw; // Start camera facing 90 degrees left
@@ -100,22 +176,31 @@ async function generateAndLoadPanorama(prompt) {
                     if (panoramaMesh) {
                         scene.remove(panoramaMesh);
                         panoramaMesh.geometry.dispose();
-                        if (panoramaMesh.material.map) panoramaMesh.material.map.dispose(); // Dispose texture
-                        panoramaMesh.material.dispose(); // Dispose material
+                        // ShaderMaterial handles its own texture disposal? Check docs.
+                        // For safety, dispose the texture if the material exists and has a map uniform
+                        if (shaderMaterial && shaderMaterial.uniforms.panoramaTexture.value) {
+                             shaderMaterial.uniforms.panoramaTexture.value.dispose();
+                        }
+                         if (shaderMaterial) shaderMaterial.dispose(); // Dispose material
                     }
 
                     // Create sphere geometry (large radius, inside-out)
-                    // Use a large radius so the camera is effectively at the center
                     const geometry = new THREE.SphereGeometry(500, 60, 40); // Radius, width segments, height segments
-                    // Invert the geometry on the x-axis so that the faces point inward
                     geometry.scale(-1, 1, 1);
 
-                    // Create material with the loaded texture
-                    // Use MeshBasicMaterial as lighting is baked into the texture
-                    const material = new THREE.MeshBasicMaterial({ map: texture });
+                    // --- Create Shader Material ---
+                    shaderMaterial = new THREE.ShaderMaterial({
+                        uniforms: {
+                            time: { value: 0.0 },
+                            panoramaTexture: { value: texture }
+                        },
+                        vertexShader: vertexShader,
+                        fragmentShader: fragmentShader,
+                        side: THREE.BackSide // Render the inside of the sphere
+                    });
 
                     // Create mesh and add to scene
-                    panoramaMesh = new THREE.Mesh(geometry, material);
+                    panoramaMesh = new THREE.Mesh(geometry, shaderMaterial);
                     scene.add(panoramaMesh);
 
                     loadingIndicator.style.display = 'none'; // Hide loading
@@ -159,12 +244,6 @@ function setupEventListeners() {
     // Credits UI Listeners
     creditsIcon.addEventListener('click', openCredits);
     closeCreditsButton.addEventListener('click', closeCredits);
-    // Optional: Close modal when clicking outside of it
-    // creditsModal.addEventListener('click', (e) => {
-    //     if (e.target === creditsModal) { // Only close if backdrop is clicked, not content
-    //         closeCredits();
-    //     }
-    // });
 }
 
 function getClientPosition(event) {
@@ -253,22 +332,20 @@ function onWindowResize() {
 // --- Credits UI Functions ---
 function openCredits() {
     creditsModal.style.display = 'block';
-    // Optional: Pause interaction with panorama while modal is open
-    // isDragging = false; // Ensure dragging stops
-    // container.style.pointerEvents = 'none';
 }
 
 function closeCredits() {
     creditsModal.style.display = 'none';
-    // Optional: Restore interaction
-    // container.style.pointerEvents = 'auto';
 }
 
 // --- Animation Loop ---
 function animate() {
     requestAnimationFrame(animate); // Request next frame
 
-    // No manual updates needed here if controls directly modify camera rotation
+    // Update shader time uniform if the material exists
+    if (shaderMaterial) {
+        shaderMaterial.uniforms.time.value = clock.getElapsedTime();
+    }
 
     renderer.render(scene, camera); // Render the scene
 }
