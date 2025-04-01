@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { vertexShader, fragmentShader } from './shaders.js';
 
 // --- Configuration ---
 const INITIAL_PROMPT = "A futuristic cyberpunk cityscape at night, filled with towering skyscrapers adorned with vibrant, glowing neon signs and advertisements. Flying vehicles zip between buildings under a dark, rainy sky reflected in wet streets.";
@@ -9,6 +8,9 @@ const CAMERA_FOV = 75; // Field of View
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1000;
 const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
+// --- Shader Constants (Adjusted for subtlety) ---
+const NEON_SATURATION_THRESHOLD = 0.70;
+const NEON_LIGHTNESS_THRESHOLD = 0.45;
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
@@ -27,6 +29,135 @@ let panoramaMesh; // To hold the sphere mesh
 let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
 let clock = new THREE.Clock(); // Clock for time uniform
 let shaderMaterial; // Material for neon effect
+
+// --- Shader Definitions ---
+const vertexShader = `
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`;
+
+// --- Refined Fragment Shader for Subtle Neon Effects ---
+const fragmentShader = `
+    uniform sampler2D panoramaTexture;
+    uniform float time;
+    varying vec2 vUv;
+
+    // Constants for neon detection (Keep these as defined in JS)
+    const float NEON_SAT_THRESHOLD = ${NEON_SATURATION_THRESHOLD.toFixed(2)};
+    const float NEON_LUM_THRESHOLD = ${NEON_LIGHTNESS_THRESHOLD.toFixed(2)};
+
+    // --- HSL Conversion ---
+    // Function to convert RGB to HSL (approximated)
+    // Returns vec3(hue, saturation, lightness) -> (x, y, z)
+    vec3 rgb2hsl(vec3 color) {
+        float maxC = max(color.r, max(color.g, color.b));
+        float minC = min(color.r, min(color.g, color.b));
+        float delta = maxC - minC;
+        float h = 0.0;
+        float s = 0.0;
+        float l = (maxC + minC) / 2.0;
+
+        if (delta > 0.0001) { // Check against a small epsilon
+            // Calculate saturation
+            s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC);
+
+            // Calculate hue (denominator 'delta' is > 0.0001 here)
+            if (maxC == color.r) {
+                h = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
+            } else if (maxC == color.g) {
+                h = (color.b - color.r) / delta + 2.0;
+            } else { // maxC == color.b
+                h = (color.r - color.g) / delta + 4.0;
+            }
+            h /= 6.0; // Normalize hue to [0, 1]
+        }
+        // Clamp saturation for safety
+        s = clamp(s, 0.0, 1.0);
+        return vec3(h, s, l);
+    }
+
+    // --- Noise function (Simple 2D hash) ---
+    // Provides pseudo-random values based on input coordinates
+    float random(vec2 st) {
+        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
+    }
+
+    // --- Main Fragment Shader ---
+    void main() {
+        vec2 baseUv = vUv;
+        vec4 texColor = texture2D(panoramaTexture, baseUv);
+
+        // Early exit for transparent pixels if needed (unlikely for panorama)
+        // if (texColor.a < 0.1) discard;
+
+        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness) -> (x, y, z)
+
+        // Check if the color qualifies as "neon" using thresholds
+        // Using .y for saturation and .z for lightness
+        bool isNeon = (hsl.y >= NEON_SAT_THRESHOLD && hsl.z >= NEON_LUM_THRESHOLD);
+
+        vec3 finalColor = texColor.rgb;
+
+        if (isNeon) {
+            // --- 1. Calculate Intensity Factors ---
+            // How much it exceeds thresholds (smoothly transitioning from 0 to 1)
+            float satFactor = smoothstep(NEON_SAT_THRESHOLD, NEON_SAT_THRESHOLD + 0.20, hsl.y); // Slightly wider transition
+            float lumFactor = smoothstep(NEON_LUM_THRESHOLD, NEON_LUM_THRESHOLD + 0.30, hsl.z); // Slightly wider transition
+            // Combine factors, slightly more emphasis on lightness for glow perception
+            float neonIntensity = clamp(satFactor * 0.4 + lumFactor * 0.6, 0.0, 1.0);
+
+            // --- 2. Subtle Brightness Flicker (not a strong pulse) ---
+            float flickerSpeed = 0.8 + hsl.x * 2.0 + neonIntensity * 1.0; // Slower base speed
+            float flickerMagnitude = 0.03 + neonIntensity * 0.07; // Reduced magnitude (max ~0.1)
+            flickerMagnitude = clamp(flickerMagnitude, 0.01, 0.1); // Clamp magnitude range
+
+            // Use noise for subtle temporal variation, less spatial dependence
+            float noiseVal = random(vec2(floor(time * 5.0 + hsl.x * 10.0), baseUv.y * 5.0)); // Slow changing noise
+
+            // Flicker wave - combination of smooth sin and noise for less regularity
+            float flickerWave = sin(time * flickerSpeed + baseUv.y * 5.0 + noiseVal * 3.14); // Smoother spatial variation
+            flickerWave = (flickerWave + (noiseVal - 0.5) * 0.5) * 0.5 + 0.5; // Make it mostly positive, add noise grain [~0, 1]
+
+            // Modulate brightness slightly
+            float brightnessMultiplier = 1.0 + (flickerWave - 0.5) * flickerMagnitude * 2.0; // Center around 1.0
+            // Ensure minimum brightness is close to original
+            brightnessMultiplier = max(1.0 - flickerMagnitude, brightnessMultiplier);
+
+            // Apply flicker to the original color
+            finalColor = texColor.rgb * brightnessMultiplier;
+
+            // --- 3. Very Subtle Distortion/Warp ---
+            // Use time and smooth noise to create a gentle, slow offset
+            float warpSpeed = 0.5 + noiseVal * 0.5 + neonIntensity * 0.3; // Slower speed
+             // Significantly reduced magnitude for HD look
+            float warpMagnitude = (0.0001 + neonIntensity * 0.0003) * (0.7 + noiseVal * 0.3);
+            warpMagnitude = clamp(warpMagnitude, 0.0, 0.0005); // Clamp max distortion to be very small
+
+            // Calculate offset using smooth sine waves and slower spatial frequency
+            float offsetX = sin(time * warpSpeed * 0.8 + baseUv.y * 8.0 + noiseVal * 2.0) * warpMagnitude;
+            float offsetY = cos(time * warpSpeed * 0.6 + baseUv.x * 8.0 + noiseVal * 3.0) * warpMagnitude;
+
+            // Sample texture again with slightly warped UVs
+            vec3 warpedColor = texture2D(panoramaTexture, baseUv + vec2(offsetX, offsetY)).rgb;
+
+            // Blend the slightly brightened/flickered color with the warped sample
+            // Blend amount increases slightly with neon intensity but stays low
+            float blendFactor = neonIntensity * (0.1 + noiseVal * 0.2); // Much smaller blend factor
+            finalColor = mix(finalColor, warpedColor, clamp(blendFactor, 0.0, 0.25)); // Mix based on intensity/noise, max 25% warped
+
+            // --- 4. Minimal Additive Glow ---
+            // Enhance brightness very slightly, tied to intensity and flicker high points
+            float glowAmount = neonIntensity * max(0.0, flickerWave - 0.6) * 0.04; // Tiny glow only on peaks
+            finalColor += finalColor * glowAmount; // Very subtle additive glow
+        }
+
+        // Final output: Clamp color values to [0, 1] range and preserve original alpha
+        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), texColor.a);
+    }
+`;
 
 // --- Initialization ---
 async function init() {
@@ -116,14 +247,14 @@ async function generateAndLoadPanorama(prompt) {
                     const geometry = new THREE.SphereGeometry(500, 64, 32); // Increased segments slightly
                     geometry.scale(-1, 1, 1); // Invert geometry normals so inside is visible
 
-                    // --- Create Shader Material (Using imported shaders) ---
+                    // --- Create Shader Material ---
                     shaderMaterial = new THREE.ShaderMaterial({
                         uniforms: {
                             time: { value: 0.0 },
                             panoramaTexture: { value: texture }
                         },
-                        vertexShader: vertexShader, // Imported from shaders.js
-                        fragmentShader: fragmentShader, // Imported from shaders.js
+                        vertexShader: vertexShader,
+                        fragmentShader: fragmentShader, // Use the refined shader
                         side: THREE.DoubleSide // Use DoubleSide for safety
                     });
 
@@ -245,7 +376,6 @@ function rotateCamera(deltaX, deltaY) {
 
     // No need for quaternion conversion since we're using Euler order 'YXZ'
 }
-
 
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
