@@ -38,7 +38,7 @@ const vertexShader = `
     }
 `;
 
-// Corrected fragment shader using .x, .y, .z for HSL components
+// Corrected and slightly safer fragment shader
 const fragmentShader = `
     uniform sampler2D panoramaTexture;
     uniform float time;
@@ -60,7 +60,10 @@ const fragmentShader = `
         float l = (maxC + minC) / 2.0;
 
         if (delta > 0.0001) { // Check against a small epsilon
+            // Calculate saturation
             s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC);
+
+            // Calculate hue (denominator 'delta' is > 0.0001 here)
             if (maxC == color.r) {
                 h = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
             } else if (maxC == color.g) {
@@ -68,14 +71,20 @@ const fragmentShader = `
             } else { // maxC == color.b
                 h = (color.r - color.g) / delta + 4.0;
             }
-            h /= 6.0;
+            h /= 6.0; // Normalize hue to [0, 1]
         }
+        // Clamp saturation for safety, though it should theoretically be in [0, 1]
+        s = clamp(s, 0.0, 1.0);
         return vec3(h, s, l);
     }
 
     // --- Main Fragment Shader ---
     void main() {
         vec4 texColor = texture2D(panoramaTexture, vUv);
+
+        // Optional: Discard pixels with very low alpha, if necessary
+        // if (texColor.a < 0.1) discard;
+
         vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness) -> (x, y, z)
 
         // Check if the color qualifies as "neon"
@@ -86,23 +95,29 @@ const fragmentShader = `
 
         if (isNeon) {
             // Apply a subtle pulsing/shifting effect for neon colors
-            // Combine time and vertical position for variation
-            // Use .x for hue
             float pulseSpeed = 2.0 + hsl.x * 3.0; // Vary speed based on hue (x)
-            float pulseIntensity = 0.05 + (hsl.y - NEON_SAT_THRESHOLD) * 0.1; // More saturated (y) = more intense pulse
-             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue (x)
-            float pulse = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.x * 1.5) * pulseIntensity + (1.0 - pulseIntensity * 0.5);
 
-             // Modulate brightness
+            // Calculate intensity based on how much saturation exceeds threshold
+            // Ensure intensityFactor is non-negative
+            float intensityFactor = max(0.0, hsl.y - NEON_SAT_THRESHOLD);
+            float pulseIntensity = 0.05 + intensityFactor * 0.1;
+            // Clamp intensity to prevent extreme effects
+            pulseIntensity = clamp(pulseIntensity, 0.0, 0.15);
+
+            // Use sine wave for smooth pulsing, vary phase with vertical UV and hue (x)
+            float pulseMultiplier = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.x * 1.5); // Ranges [-1, 1]
+            // Map sine wave to a brightness modulation factor (e.g., [0.85, 1.15])
+            float pulse = pulseMultiplier * pulseIntensity + (1.0 - pulseIntensity * 0.5);
+            // Ensure the pulse factor doesn't go below a minimum brightness (e.g., 0.5) or negative
+            pulse = max(0.5, pulse);
+
+
+            // Modulate brightness
             finalColor = texColor.rgb * pulse;
-
-             // Optional: Add a very subtle hue shift (can be performance intensive if using HSL->RGB conversion)
-             // float hueShiftAmount = sin(time * 0.5 + vUv.x * 5.0) * 0.01; // Slow horizontal shift
-             // vec3 shiftedHsl = vec3(mod(hsl.x + hueShiftAmount, 1.0), hsl.y, hsl.z * pulse); // Access hsl components correctly (x, y, z)
-             // finalColor = hsl2rgb(shiftedHsl); // Requires hsl2rgb function
         }
 
-        gl_FragColor = vec4(finalColor, texColor.a);
+        // Final output, clamp color just in case, pass original alpha
+        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), texColor.a);
     }
 `;
 
@@ -116,12 +131,12 @@ async function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
-    camera.position.set(0, 0, 0.1);
-    camera.rotation.order = 'YXZ'; // Set rotation order early
+    camera.position.set(0, 0, 0.1); // Set a small z offset to ensure camera is *inside* the sphere
+    camera.rotation.order = 'YXZ'; // Use YXZ order for intuitive yaw/pitch control
     camera.rotation.y = totalYaw; // Start camera facing 90 degrees left
 
     // Renderer setup
-    renderer = new THREE.WebGLRenderer();
+    renderer = new THREE.WebGLRenderer({ antialias: true }); // Enable antialiasing
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio); // Adjust for high-DPI displays
     container.appendChild(renderer.domElement);
@@ -178,18 +193,22 @@ async function generateAndLoadPanorama(prompt) {
 
                     // Remove previous panorama if it exists
                     if (panoramaMesh) {
+                        // Dispose old material and texture first
+                         if (shaderMaterial) {
+                             if (shaderMaterial.uniforms.panoramaTexture.value) {
+                                 shaderMaterial.uniforms.panoramaTexture.value.dispose();
+                             }
+                             shaderMaterial.dispose();
+                         }
+                         // Then remove mesh and dispose geometry
                         scene.remove(panoramaMesh);
                         panoramaMesh.geometry.dispose();
-                        // Dispose the old texture and material explicitly
-                        if (shaderMaterial && shaderMaterial.uniforms.panoramaTexture.value) {
-                             shaderMaterial.uniforms.panoramaTexture.value.dispose();
-                        }
-                         if (shaderMaterial) shaderMaterial.dispose();
+                        panoramaMesh = null; // Clear reference
                     }
 
                     // Create sphere geometry (large radius, inside-out)
-                    const geometry = new THREE.SphereGeometry(500, 60, 40); // Radius, width segments, height segments
-                    geometry.scale(-1, 1, 1);
+                    const geometry = new THREE.SphereGeometry(500, 64, 32); // Increased segments slightly
+                    geometry.scale(-1, 1, 1); // Invert geometry normals so inside is visible
 
                     // --- Create Shader Material ---
                     shaderMaterial = new THREE.ShaderMaterial({
@@ -198,8 +217,8 @@ async function generateAndLoadPanorama(prompt) {
                             panoramaTexture: { value: texture }
                         },
                         vertexShader: vertexShader,
-                        fragmentShader: fragmentShader,
-                        side: THREE.BackSide // Render the inside of the sphere
+                        fragmentShader: fragmentShader, // Using the corrected shader
+                        side: THREE.DoubleSide // Use DoubleSide for safety, though BackSide should work with scale(-1,1,1)
                     });
 
                     // Create mesh and add to scene
@@ -246,13 +265,19 @@ function setupEventListeners() {
     // Window resize
     window.addEventListener('resize', onWindowResize);
 
-    // Credits UI Listeners (Check if elements exist before adding listeners)
+    // Credits UI Listeners
     if (creditsIcon) creditsIcon.addEventListener('click', openCredits);
     if (closeCreditsButton) closeCreditsButton.addEventListener('click', closeCredits);
+    // Optional: Close modal if clicking outside of it
+    document.addEventListener('click', (event) => {
+      if (creditsModal && creditsModal.style.display === 'block' && !creditsModal.contains(event.target) && event.target !== creditsIcon) {
+         closeCredits();
+      }
+    });
 }
 
 function getClientPosition(event) {
-    if (event.touches && event.touches.length > 0) { // Check length too
+    if (event.touches && event.touches.length > 0) {
         return { x: event.touches[0].clientX, y: event.touches[0].clientY };
     } else {
         return { x: event.clientX, y: event.clientY };
@@ -260,33 +285,26 @@ function getClientPosition(event) {
 }
 
 function onPointerDown(event) {
-    // Check if clicking inside the credits modal
-    if (creditsModal && creditsModal.style.display !== 'none' && creditsModal.contains(event.target)) {
-        return; // Don't start dragging if clicking inside the modal
+    // Ignore if clicking inside the modal or on the icon
+    if ((creditsModal && creditsModal.contains(event.target)) || (creditsIcon && creditsIcon.contains(event.target))) {
+        return;
     }
-     // Check if clicking the credits icon
-     if (creditsIcon && creditsIcon.contains(event.target)) {
-         return; // Don't start dragging if clicking the icon
-     }
-
 
     // Check if it's the primary button for mouse or single touch
-    if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
-    if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
+    if ((event.button && event.button !== 0) && !event.touches) return;
+    if (event.touches && event.touches.length > 1) return;
 
     isDragging = true;
     const pos = getClientPosition(event);
     previousMousePosition.x = pos.x;
     previousMousePosition.y = pos.y;
-    container.style.cursor = 'grabbing'; // Change cursor
+    container.style.cursor = 'grabbing';
 
-    // Prevent default behavior like text selection or page scrolling on touch
     if (event.touches) event.preventDefault();
 }
 
 function onPointerMove(event) {
     if (!isDragging) return;
-    // Prevent scrolling while dragging on touch devices
     if (event.touches) event.preventDefault();
 
     const pos = getClientPosition(event);
@@ -302,7 +320,7 @@ function onPointerMove(event) {
 function onPointerUp() {
     if (!isDragging) return;
     isDragging = false;
-    container.style.cursor = 'grab'; // Restore cursor
+    container.style.cursor = 'grab';
 }
 
 function rotateCamera(deltaX, deltaY) {
@@ -310,19 +328,16 @@ function rotateCamera(deltaX, deltaY) {
     const yawAngle = -deltaX * MOUSE_SENSITIVITY;
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
-    // --- Yaw (Horizontal Rotation) ---
-    // Apply yaw rotation directly to camera's y rotation. We use rotation.order 'YXZ'
+    // Apply yaw (horizontal) rotation
     camera.rotation.y += yawAngle;
 
-    // --- Pitch (Vertical Rotation) ---
-    // Apply pitch rotation directly to camera's x rotation and clamp it
-    const maxPitch = Math.PI / 2 - 0.05; // Limit to slightly less than 90 degrees up/down
-    const minPitch = -Math.PI / 2 + 0.05;
+    // Apply pitch (vertical) rotation and clamp it
+    const maxPitch = Math.PI / 2 - 0.1; // Slightly less than 90 degrees
+    const minPitch = -Math.PI / 2 + 0.1;
     camera.rotation.x += pitchAngle;
     camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
 
-    // Rotation order 'YXZ' is already set in init()
-    // No need to clamp Yaw here if we want infinite horizontal rotation
+    // No need for quaternion conversion since we're using Euler order 'YXZ'
 }
 
 
@@ -330,7 +345,7 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio); // Update pixel ratio on resize too
+    renderer.setPixelRatio(window.devicePixelRatio);
 }
 
 // --- Credits UI Functions ---
@@ -346,18 +361,23 @@ function closeCredits() {
 function animate() {
     requestAnimationFrame(animate); // Request next frame
 
-    // Update shader time uniform if the material exists
-    if (shaderMaterial) {
+    // Update shader time uniform if the material and uniform exist
+    if (shaderMaterial && shaderMaterial.uniforms.time) {
         shaderMaterial.uniforms.time.value = clock.getElapsedTime();
     }
 
-    renderer.render(scene, camera); // Render the scene
+    // Ensure scene and camera exist before rendering
+    if(scene && camera) {
+        renderer.render(scene, camera); // Render the scene
+    } else {
+        console.warn("Scene or Camera not ready for rendering.");
+    }
 }
 
 // --- Start ---
 init().catch(err => {
-    console.error("Initialization failed in catch block:", err);
-    // Ensure loading is hidden and error is shown even if init promise rejects late
+    console.error("Initialization failed:", err);
+    // Ensure loading is hidden and error is shown
     loadingIndicator.style.display = 'none';
     errorMessage.style.display = 'block';
     errorMessage.querySelector('p').textContent = `Initialization Error: ${err.message || 'An unknown error occurred.'}`;
