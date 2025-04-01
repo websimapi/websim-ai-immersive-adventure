@@ -1,16 +1,13 @@
 import * as THREE from 'three';
 
 // --- Configuration ---
-const INITIAL_PROMPT = "A futuristic cyberpunk cityscape at night, filled with towering skyscrapers adorned with vibrant, glowing neon signs and advertisements. Flying vehicles zip between buildings under a dark, rainy sky reflected in wet streets.";
+const INITIAL_PROMPT = "A tranquil wilderness campsite at dusk, featuring a crackling campfire casting warm light on nearby tents nestled under towering pine trees. The soft rustling of leaves can be heard in a gentle breeze under a twilight sky.";
 const IMAGE_WIDTH = 3840;
 const IMAGE_HEIGHT = 2160;
 const CAMERA_FOV = 75; // Field of View
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1000;
 const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
-// --- Shader Constants (Adjusted for subtlety) ---
-const NEON_SATURATION_THRESHOLD = 0.70;
-const NEON_LIGHTNESS_THRESHOLD = 0.45;
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
@@ -27,137 +24,6 @@ let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
 let panoramaMesh; // To hold the sphere mesh
 let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
-let clock = new THREE.Clock(); // Clock for time uniform
-let shaderMaterial; // Material for neon effect
-
-// --- Shader Definitions ---
-const vertexShader = `
-    varying vec2 vUv;
-    void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-`;
-
-// --- Refined Fragment Shader for Subtle Neon Effects ---
-const fragmentShader = `
-    uniform sampler2D panoramaTexture;
-    uniform float time;
-    varying vec2 vUv;
-
-    // Constants for neon detection (Keep these as defined in JS)
-    const float NEON_SAT_THRESHOLD = ${NEON_SATURATION_THRESHOLD.toFixed(2)};
-    const float NEON_LUM_THRESHOLD = ${NEON_LIGHTNESS_THRESHOLD.toFixed(2)};
-
-    // --- HSL Conversion ---
-    // Function to convert RGB to HSL (approximated)
-    // Returns vec3(hue, saturation, lightness) -> (x, y, z)
-    vec3 rgb2hsl(vec3 color) {
-        float maxC = max(color.r, max(color.g, color.b));
-        float minC = min(color.r, min(color.g, color.b));
-        float delta = maxC - minC;
-        float h = 0.0;
-        float s = 0.0;
-        float l = (maxC + minC) / 2.0;
-
-        if (delta > 0.0001) { // Check against a small epsilon
-            // Calculate saturation
-            s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC);
-
-            // Calculate hue (denominator 'delta' is > 0.0001 here)
-            if (maxC == color.r) {
-                h = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
-            } else if (maxC == color.g) {
-                h = (color.b - color.r) / delta + 2.0;
-            } else { // maxC == color.b
-                h = (color.r - color.g) / delta + 4.0;
-            }
-            h /= 6.0; // Normalize hue to [0, 1]
-        }
-        // Clamp saturation for safety
-        s = clamp(s, 0.0, 1.0);
-        return vec3(h, s, l);
-    }
-
-    // --- Noise function (Simple 2D hash) ---
-    // Provides pseudo-random values based on input coordinates
-    float random(vec2 st) {
-        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
-    }
-
-    // --- Main Fragment Shader ---
-    void main() {
-        vec2 baseUv = vUv;
-        vec4 texColor = texture2D(panoramaTexture, baseUv);
-
-        // Early exit for transparent pixels if needed (unlikely for panorama)
-        // if (texColor.a < 0.1) discard;
-
-        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness) -> (x, y, z)
-
-        // Check if the color qualifies as "neon" using thresholds
-        // Using .y for saturation and .z for lightness
-        bool isNeon = (hsl.y >= NEON_SAT_THRESHOLD && hsl.z >= NEON_LUM_THRESHOLD);
-
-        vec3 finalColor = texColor.rgb;
-
-        if (isNeon) {
-            // --- 1. Calculate Intensity Factors ---
-            // How much it exceeds thresholds (smoothly transitioning from 0 to 1)
-            float satFactor = smoothstep(NEON_SAT_THRESHOLD, NEON_SAT_THRESHOLD + 0.20, hsl.y); // Slightly wider transition
-            float lumFactor = smoothstep(NEON_LUM_THRESHOLD, NEON_LUM_THRESHOLD + 0.30, hsl.z); // Slightly wider transition
-            // Combine factors, slightly more emphasis on lightness for glow perception
-            float neonIntensity = clamp(satFactor * 0.4 + lumFactor * 0.6, 0.0, 1.0);
-
-            // --- 2. Subtle Brightness Flicker (not a strong pulse) ---
-            float flickerSpeed = 0.8 + hsl.x * 2.0 + neonIntensity * 1.0; // Slower base speed
-            float flickerMagnitude = 0.03 + neonIntensity * 0.07; // Reduced magnitude (max ~0.1)
-            flickerMagnitude = clamp(flickerMagnitude, 0.01, 0.1); // Clamp magnitude range
-
-            // Use noise for subtle temporal variation, less spatial dependence
-            float noiseVal = random(vec2(floor(time * 5.0 + hsl.x * 10.0), baseUv.y * 5.0)); // Slow changing noise
-
-            // Flicker wave - combination of smooth sin and noise for less regularity
-            float flickerWave = sin(time * flickerSpeed + baseUv.y * 5.0 + noiseVal * 3.14); // Smoother spatial variation
-            flickerWave = (flickerWave + (noiseVal - 0.5) * 0.5) * 0.5 + 0.5; // Make it mostly positive, add noise grain [~0, 1]
-
-            // Modulate brightness slightly
-            float brightnessMultiplier = 1.0 + (flickerWave - 0.5) * flickerMagnitude * 2.0; // Center around 1.0
-            // Ensure minimum brightness is close to original
-            brightnessMultiplier = max(1.0 - flickerMagnitude, brightnessMultiplier);
-
-            // Apply flicker to the original color
-            finalColor = texColor.rgb * brightnessMultiplier;
-
-            // --- 3. Very Subtle Distortion/Warp ---
-            // Use time and smooth noise to create a gentle, slow offset
-            float warpSpeed = 0.5 + noiseVal * 0.5 + neonIntensity * 0.3; // Slower speed
-             // Significantly reduced magnitude for HD look
-            float warpMagnitude = (0.0001 + neonIntensity * 0.0003) * (0.7 + noiseVal * 0.3);
-            warpMagnitude = clamp(warpMagnitude, 0.0, 0.0005); // Clamp max distortion to be very small
-
-            // Calculate offset using smooth sine waves and slower spatial frequency
-            float offsetX = sin(time * warpSpeed * 0.8 + baseUv.y * 8.0 + noiseVal * 2.0) * warpMagnitude;
-            float offsetY = cos(time * warpSpeed * 0.6 + baseUv.x * 8.0 + noiseVal * 3.0) * warpMagnitude;
-
-            // Sample texture again with slightly warped UVs
-            vec3 warpedColor = texture2D(panoramaTexture, baseUv + vec2(offsetX, offsetY)).rgb;
-
-            // Blend the slightly brightened/flickered color with the warped sample
-            // Blend amount increases slightly with neon intensity but stays low
-            float blendFactor = neonIntensity * (0.1 + noiseVal * 0.2); // Much smaller blend factor
-            finalColor = mix(finalColor, warpedColor, clamp(blendFactor, 0.0, 0.25)); // Mix based on intensity/noise, max 25% warped
-
-            // --- 4. Minimal Additive Glow ---
-            // Enhance brightness very slightly, tied to intensity and flicker high points
-            float glowAmount = neonIntensity * max(0.0, flickerWave - 0.6) * 0.04; // Tiny glow only on peaks
-            finalColor += finalColor * glowAmount; // Very subtle additive glow
-        }
-
-        // Final output: Clamp color values to [0, 1] range and preserve original alpha
-        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), texColor.a);
-    }
-`;
 
 // --- Initialization ---
 async function init() {
@@ -168,12 +34,14 @@ async function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
-    camera.position.set(0, 0, 0.1); // Set a small z offset to ensure camera is *inside* the sphere
-    camera.rotation.order = 'YXZ'; // Use YXZ order for intuitive yaw/pitch control
+    // Position camera slightly forward; it will look at the center by default.
+    // We rotate the camera itself, not move it around.
+    camera.position.set(0, 0, 0.1);
+    camera.rotation.order = 'YXZ'; // Set rotation order early
     camera.rotation.y = totalYaw; // Start camera facing 90 degrees left
 
     // Renderer setup
-    renderer = new THREE.WebGLRenderer({ antialias: true }); // Enable antialiasing
+    renderer = new THREE.WebGLRenderer();
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio); // Adjust for high-DPI displays
     container.appendChild(renderer.domElement);
@@ -230,36 +98,24 @@ async function generateAndLoadPanorama(prompt) {
 
                     // Remove previous panorama if it exists
                     if (panoramaMesh) {
-                        // Dispose old material and texture first
-                         if (shaderMaterial) {
-                             if (shaderMaterial.uniforms.panoramaTexture.value) {
-                                 shaderMaterial.uniforms.panoramaTexture.value.dispose();
-                             }
-                             shaderMaterial.dispose();
-                         }
-                         // Then remove mesh and dispose geometry
                         scene.remove(panoramaMesh);
                         panoramaMesh.geometry.dispose();
-                        panoramaMesh = null; // Clear reference
+                        if (panoramaMesh.material.map) panoramaMesh.material.map.dispose(); // Dispose texture
+                        panoramaMesh.material.dispose(); // Dispose material
                     }
 
                     // Create sphere geometry (large radius, inside-out)
-                    const geometry = new THREE.SphereGeometry(500, 64, 32); // Increased segments slightly
-                    geometry.scale(-1, 1, 1); // Invert geometry normals so inside is visible
+                    // Use a large radius so the camera is effectively at the center
+                    const geometry = new THREE.SphereGeometry(500, 60, 40); // Radius, width segments, height segments
+                    // Invert the geometry on the x-axis so that the faces point inward
+                    geometry.scale(-1, 1, 1);
 
-                    // --- Create Shader Material ---
-                    shaderMaterial = new THREE.ShaderMaterial({
-                        uniforms: {
-                            time: { value: 0.0 },
-                            panoramaTexture: { value: texture }
-                        },
-                        vertexShader: vertexShader,
-                        fragmentShader: fragmentShader, // Use the refined shader
-                        side: THREE.DoubleSide // Use DoubleSide for safety
-                    });
+                    // Create material with the loaded texture
+                    // Use MeshBasicMaterial as lighting is baked into the texture
+                    const material = new THREE.MeshBasicMaterial({ map: texture });
 
                     // Create mesh and add to scene
-                    panoramaMesh = new THREE.Mesh(geometry, shaderMaterial);
+                    panoramaMesh = new THREE.Mesh(geometry, material);
                     scene.add(panoramaMesh);
 
                     loadingIndicator.style.display = 'none'; // Hide loading
@@ -270,7 +126,6 @@ async function generateAndLoadPanorama(prompt) {
                     console.error('Error loading texture:', error);
                     loadingIndicator.style.display = 'none';
                     errorMessage.style.display = 'block';
-                    errorMessage.querySelector('p').textContent = 'Error loading panorama image. Please check the console for details.';
                     reject(new Error('Failed to load panorama texture.')); // Reject the promise on error
                 }
             );
@@ -280,7 +135,6 @@ async function generateAndLoadPanorama(prompt) {
         console.error("Error generating image:", error);
         loadingIndicator.style.display = 'none';
         errorMessage.style.display = 'block';
-        errorMessage.querySelector('p').textContent = `Error generating image: ${error.message || 'Unknown error'}`;
         throw new Error('Failed to generate panorama image.'); // Re-throw specific error
     }
 }
@@ -303,18 +157,18 @@ function setupEventListeners() {
     window.addEventListener('resize', onWindowResize);
 
     // Credits UI Listeners
-    if (creditsIcon) creditsIcon.addEventListener('click', openCredits);
-    if (closeCreditsButton) closeCreditsButton.addEventListener('click', closeCredits);
-    // Optional: Close modal if clicking outside of it
-    document.addEventListener('click', (event) => {
-      if (creditsModal && creditsModal.style.display === 'block' && !creditsModal.contains(event.target) && event.target !== creditsIcon) {
-         closeCredits();
-      }
-    });
+    creditsIcon.addEventListener('click', openCredits);
+    closeCreditsButton.addEventListener('click', closeCredits);
+    // Optional: Close modal when clicking outside of it
+    // creditsModal.addEventListener('click', (e) => {
+    //     if (e.target === creditsModal) { // Only close if backdrop is clicked, not content
+    //         closeCredits();
+    //     }
+    // });
 }
 
 function getClientPosition(event) {
-    if (event.touches && event.touches.length > 0) {
+    if (event.touches && event.touches.length > 0) { // Check length too
         return { x: event.touches[0].clientX, y: event.touches[0].clientY };
     } else {
         return { x: event.clientX, y: event.clientY };
@@ -322,26 +176,23 @@ function getClientPosition(event) {
 }
 
 function onPointerDown(event) {
-    // Ignore if clicking inside the modal or on the icon
-    if ((creditsModal && creditsModal.contains(event.target)) || (creditsIcon && creditsIcon.contains(event.target))) {
-        return;
-    }
-
     // Check if it's the primary button for mouse or single touch
-    if ((event.button && event.button !== 0) && !event.touches) return;
-    if (event.touches && event.touches.length > 1) return;
+    if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
+    if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
 
     isDragging = true;
     const pos = getClientPosition(event);
     previousMousePosition.x = pos.x;
     previousMousePosition.y = pos.y;
-    container.style.cursor = 'grabbing';
+    container.style.cursor = 'grabbing'; // Change cursor
 
+    // Prevent default behavior like text selection or page scrolling on touch
     if (event.touches) event.preventDefault();
 }
 
 function onPointerMove(event) {
     if (!isDragging) return;
+    // Prevent scrolling while dragging on touch devices
     if (event.touches) event.preventDefault();
 
     const pos = getClientPosition(event);
@@ -357,7 +208,7 @@ function onPointerMove(event) {
 function onPointerUp() {
     if (!isDragging) return;
     isDragging = false;
-    container.style.cursor = 'grab';
+    container.style.cursor = 'grab'; // Restore cursor
 }
 
 function rotateCamera(deltaX, deltaY) {
@@ -365,57 +216,68 @@ function rotateCamera(deltaX, deltaY) {
     const yawAngle = -deltaX * MOUSE_SENSITIVITY;
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
-    // Apply yaw (horizontal) rotation
-    camera.rotation.y += yawAngle;
+    // --- Yaw (Horizontal Rotation) ---
+    // Calculate potential new total yaw relative to the initial offset
+    const potentialYaw = totalYaw + yawAngle;
 
-    // Apply pitch (vertical) rotation and clamp it
-    const maxPitch = Math.PI / 2 - 0.1; // Slightly less than 90 degrees
-    const minPitch = -Math.PI / 2 + 0.1;
+    // Define yaw limits relative to the starting angle (+/- 100 degrees from the start)
+    // Start angle is Math.PI / 2
+    const startAngle = Math.PI / 2;
+    const yawLimitRange = (100 * Math.PI) / 180; // +/- 100 degrees in radians
+    const minYaw = startAngle - yawLimitRange;
+    const maxYaw = startAngle + yawLimitRange;
+
+    // Clamp the total yaw
+    totalYaw = Math.max(minYaw, Math.min(maxYaw, potentialYaw));
+
+    // Apply the clamped yaw to the camera
+    camera.rotation.y = totalYaw;
+
+    // --- Pitch (Vertical Rotation) ---
+    // Apply pitch rotation directly to camera's x rotation and clamp it
+    const maxPitch = Math.PI / 2 - 0.05; // Limit to slightly less than 90 degrees up/down
+    const minPitch = -Math.PI / 2 + 0.05;
     camera.rotation.x += pitchAngle;
     camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
 
-    // No need for quaternion conversion since we're using Euler order 'YXZ'
+    // Rotation order 'YXZ' is already set in init()
 }
 
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(window.devicePixelRatio); // Update pixel ratio on resize too
 }
 
 // --- Credits UI Functions ---
 function openCredits() {
-    if (creditsModal) creditsModal.style.display = 'block';
+    creditsModal.style.display = 'block';
+    // Optional: Pause interaction with panorama while modal is open
+    // isDragging = false; // Ensure dragging stops
+    // container.style.pointerEvents = 'none';
 }
 
 function closeCredits() {
-     if (creditsModal) creditsModal.style.display = 'none';
+    creditsModal.style.display = 'none';
+    // Optional: Restore interaction
+    // container.style.pointerEvents = 'auto';
 }
 
 // --- Animation Loop ---
 function animate() {
     requestAnimationFrame(animate); // Request next frame
 
-    // Update shader time uniform if the material and uniform exist
-    if (shaderMaterial && shaderMaterial.uniforms.time) {
-        shaderMaterial.uniforms.time.value = clock.getElapsedTime();
-    }
+    // No manual updates needed here if controls directly modify camera rotation
 
-    // Ensure scene and camera exist before rendering
-    if(scene && camera) {
-        renderer.render(scene, camera); // Render the scene
-    } else {
-        // Don't log excessively if just waiting for init
-        // console.warn("Scene or Camera not ready for rendering.");
-    }
+    renderer.render(scene, camera); // Render the scene
 }
 
 // --- Start ---
 init().catch(err => {
-    console.error("Initialization failed:", err);
-    // Ensure loading is hidden and error is shown
+    console.error("Initialization failed in catch block:", err);
+    // Ensure loading is hidden and error is shown even if init promise rejects late
     loadingIndicator.style.display = 'none';
     errorMessage.style.display = 'block';
-    errorMessage.querySelector('p').textContent = `Initialization Error: ${err.message || 'An unknown error occurred.'}`;
+    errorMessage.querySelector('p').textContent = `Error: ${err.message || 'An unknown error occurred during initialization.'}`;
 });
