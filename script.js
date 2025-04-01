@@ -49,6 +49,7 @@ const fragmentShader = `
 
     // --- HSL Conversion ---
     // Function to convert RGB to HSL (approximated, good enough for thresholding)
+    // Returns vec3(hue, saturation, lightness)
     vec3 rgb2hsl(vec3 color) {
         float maxC = max(color.r, max(color.g, color.b));
         float minC = min(color.r, min(color.g, color.b));
@@ -74,20 +75,22 @@ const fragmentShader = `
     // --- Main Fragment Shader ---
     void main() {
         vec4 texColor = texture2D(panoramaTexture, vUv);
-        vec3 hsl = rgb2hsl(texColor.rgb);
+        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness)
 
         // Check if the color qualifies as "neon"
-        bool isNeon = (hsl.s >= NEON_SAT_THRESHOLD && hsl.l >= NEON_LUM_THRESHOLD);
+        // Use .y for saturation and .z for lightness
+        bool isNeon = (hsl.y >= NEON_SAT_THRESHOLD && hsl.z >= NEON_LUM_THRESHOLD);
 
         vec3 finalColor = texColor.rgb;
 
         if (isNeon) {
             // Apply a subtle pulsing/shifting effect for neon colors
             // Combine time and vertical position for variation
-            float pulseSpeed = 2.0 + hsl.h * 3.0; // Vary speed based on hue
-            float pulseIntensity = 0.05 + (hsl.s - NEON_SAT_THRESHOLD) * 0.1; // More saturated = more intense pulse
-             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue
-            float pulse = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.h * 1.5) * pulseIntensity + (1.0 - pulseIntensity * 0.5);
+            // Use .x for hue
+            float pulseSpeed = 2.0 + hsl.x * 3.0; // Vary speed based on hue
+            float pulseIntensity = 0.05 + (hsl.y - NEON_SAT_THRESHOLD) * 0.1; // More saturated = more intense pulse
+             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue (.x)
+            float pulse = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.x * 1.5) * pulseIntensity + (1.0 - pulseIntensity * 0.5);
 
              // Modulate brightness
             finalColor = texColor.rgb * pulse;
@@ -211,6 +214,7 @@ async function generateAndLoadPanorama(prompt) {
                     console.error('Error loading texture:', error);
                     loadingIndicator.style.display = 'none';
                     errorMessage.style.display = 'block';
+                    errorMessage.querySelector('p').textContent = 'Error loading panorama image. Please check the console for details.';
                     reject(new Error('Failed to load panorama texture.')); // Reject the promise on error
                 }
             );
@@ -220,6 +224,7 @@ async function generateAndLoadPanorama(prompt) {
         console.error("Error generating image:", error);
         loadingIndicator.style.display = 'none';
         errorMessage.style.display = 'block';
+        errorMessage.querySelector('p').textContent = `Error generating image: ${error.message || 'Unknown error'}`;
         throw new Error('Failed to generate panorama image.'); // Re-throw specific error
     }
 }
@@ -241,9 +246,9 @@ function setupEventListeners() {
     // Window resize
     window.addEventListener('resize', onWindowResize);
 
-    // Credits UI Listeners
-    creditsIcon.addEventListener('click', openCredits);
-    closeCreditsButton.addEventListener('click', closeCredits);
+    // Credits UI Listeners (Check if elements exist before adding listeners)
+    if (creditsIcon) creditsIcon.addEventListener('click', openCredits);
+    if (closeCreditsButton) closeCreditsButton.addEventListener('click', closeCredits);
 }
 
 function getClientPosition(event) {
@@ -255,6 +260,16 @@ function getClientPosition(event) {
 }
 
 function onPointerDown(event) {
+    // Check if clicking inside the credits modal
+    if (creditsModal && creditsModal.style.display !== 'none' && creditsModal.contains(event.target)) {
+        return; // Don't start dragging if clicking inside the modal
+    }
+     // Check if clicking the credits icon
+     if (creditsIcon && creditsIcon.contains(event.target)) {
+         return; // Don't start dragging if clicking the icon
+     }
+
+
     // Check if it's the primary button for mouse or single touch
     if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
     if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
@@ -331,11 +346,11 @@ function onWindowResize() {
 
 // --- Credits UI Functions ---
 function openCredits() {
-    creditsModal.style.display = 'block';
+    if (creditsModal) creditsModal.style.display = 'block';
 }
 
 function closeCredits() {
-    creditsModal.style.display = 'none';
+     if (creditsModal) creditsModal.style.display = 'none';
 }
 
 // --- Animation Loop ---
@@ -356,5 +371,5 @@ init().catch(err => {
     // Ensure loading is hidden and error is shown even if init promise rejects late
     loadingIndicator.style.display = 'none';
     errorMessage.style.display = 'block';
-    errorMessage.querySelector('p').textContent = `Error: ${err.message || 'An unknown error occurred during initialization.'}`;
+    errorMessage.querySelector('p').textContent = `Initialization Error: ${err.message || 'An unknown error occurred.'}`;
 });
