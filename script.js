@@ -14,6 +14,9 @@ const container = document.getElementById('panorama-container');
 const loadingIndicator = document.getElementById('loading-indicator');
 const errorMessage = document.getElementById('error-message');
 const promptDisplay = document.getElementById('prompt-display');
+const creditsIcon = document.getElementById('credits-icon');
+const creditsModal = document.getElementById('credits-modal');
+const closeCreditsButton = document.getElementById('close-credits');
 
 // --- State ---
 let scene, camera, renderer, textureLoader;
@@ -152,6 +155,16 @@ function setupEventListeners() {
 
     // Window resize
     window.addEventListener('resize', onWindowResize);
+
+    // Credits UI Listeners
+    creditsIcon.addEventListener('click', openCredits);
+    closeCreditsButton.addEventListener('click', closeCredits);
+    // Optional: Close modal when clicking outside of it
+    // creditsModal.addEventListener('click', (e) => {
+    //     if (e.target === creditsModal) { // Only close if backdrop is clicked, not content
+    //         closeCredits();
+    //     }
+    // });
 }
 
 function getClientPosition(event) {
@@ -235,6 +248,20 @@ function onWindowResize() {
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio); // Update pixel ratio on resize too
+}
+
+// --- Credits UI Functions ---
+function openCredits() {
+    creditsModal.style.display = 'block';
+    // Optional: Pause interaction with panorama while modal is open
+    // isDragging = false; // Ensure dragging stops
+    // container.style.pointerEvents = 'none';
+}
+
+function closeCredits() {
+    creditsModal.style.display = 'none';
+    // Optional: Restore interaction
+    // container.style.pointerEvents = 'auto';
 }
 
 // --- Animation Loop ---

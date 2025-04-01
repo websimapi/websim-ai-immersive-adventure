@@ -36,9 +36,10 @@
             padding: 20px;
             border-radius: 10px;
             text-align: center;
+            z-index: 10; /* Ensure it's above the canvas */
         }
          #error-message {
-            color: red;
+            color: #ff8888; /* Soft red */
             display: none; /* Hidden by default */
          }
 
@@ -53,7 +54,81 @@
             font-size: 0.9em;
             max-width: 80%;
             text-align: center;
+            z-index: 10;
         }
+
+        /* Credits Icon */
+        #credits-icon {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 30px;
+            height: 30px;
+            background-color: rgba(0, 0, 0, 0.6);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            z-index: 10;
+            transition: background-color 0.3s ease;
+        }
+        #credits-icon:hover {
+             background-color: rgba(0, 0, 0, 0.8);
+        }
+        #credits-icon svg {
+            width: 18px;
+            height: 18px;
+            fill: white;
+        }
+
+        /* Credits Modal */
+        #credits-modal {
+            display: none; /* Hidden by default */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(30, 30, 30, 0.9);
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            z-index: 20; /* Above other UI elements */
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            max-width: 400px;
+        }
+        #credits-modal h2 {
+            margin-top: 0;
+            color: #eee;
+        }
+         #credits-modal p {
+             margin-bottom: 15px;
+             line-height: 1.6;
+             color: #ccc;
+         }
+        #credits-modal a {
+            color: #8ab4f8; /* Light blue link */
+            text-decoration: none;
+        }
+        #credits-modal a:hover {
+            text-decoration: underline;
+        }
+        #close-credits {
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            background: none;
+            border: none;
+            color: #aaa;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 5px;
+            line-height: 1;
+        }
+        #close-credits:hover {
+            color: white;
+        }
+
     </style>
 </head>
 <body>
@@ -66,6 +141,24 @@
         <p>Failed to generate the environment. Please try refreshing.</p>
      </div>
     <div id="prompt-display">Prompt: Initializing...</div>
+
+    <!-- Credits Icon -->
+    <div id="credits-icon" title="Credits">
+        <!-- Simple 'i' Info Icon SVG -->
+        <svg viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+        </svg>
+    </div>
+
+    <!-- Credits Modal -->
+    <div id="credits-modal">
+        <button id="close-credits">&times;</button>
+        <h2>Credits</h2>
+        <p>This immersive experience was inspired by the creative work found on WebSim.AI.</p>
+        <p>Special thanks for inspiration to:</p>
+        <p><a href="https://websim.ai/@Or9" target="_blank" rel="noopener noreferrer">https://websim.ai/@Or9</a></p>
+    </div>
+
 
     <script type="importmap">
     {
