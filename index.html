@@ -23,10 +23,38 @@
             top: 0;
             left: 0;
             cursor: grab;
+            z-index: 1; /* Ensure canvas is behind labels */
         }
         #panorama-container:active {
             cursor: grabbing;
         }
+
+        /* Added: Container for CSS2D Labels */
+        #label-container {
+             width: 100%;
+             height: 100%;
+             position: absolute;
+             top: 0;
+             left: 0;
+             overflow: hidden; /* Important for CSS2DRenderer */
+             pointer-events: none; /* Allow clicks/drags to pass through to canvas */
+             z-index: 2; /* Ensure labels are above canvas */
+        }
+
+        /* Added: Style for individual object labels */
+        .object-label {
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-size: 12px;
+            white-space: nowrap; /* Prevent line breaks */
+            /* pointer-events: none; /* Handled by container now */
+            user-select: none; /* Prevent text selection */
+            /* The CSS2DRenderer handles positioning based on the object's center */
+        }
+
+
         #loading-indicator, #error-message {
             position: absolute;
             top: 50%;
@@ -36,7 +64,7 @@
             padding: 20px;
             border-radius: 10px;
             text-align: center;
-            z-index: 10; /* Ensure it's above the canvas */
+            z-index: 10; /* Ensure it's above the canvas and labels */
         }
          #error-message {
             color: #ff8888; /* Soft red */
@@ -54,7 +82,7 @@
             font-size: 0.9em;
             max-width: 80%;
             text-align: center;
-            z-index: 10;
+            z-index: 10; /* Above canvas and labels */
         }
 
         /* Credits Icon */
@@ -70,7 +98,7 @@
             justify-content: center;
             align-items: center;
             cursor: pointer;
-            z-index: 10;
+            z-index: 10; /* Above canvas and labels */
             transition: background-color 0.3s ease;
         }
         #credits-icon:hover {
@@ -133,9 +161,12 @@
 </head>
 <body>
     <div id="panorama-container"></div>
+    <div id="label-container"></div> <!-- Added container for labels -->
+
     <div id="loading-indicator">
         <p>Generating immersive environment...</p>
-        <p>This might take a moment.</p>
+        <!-- Modified loading text -->
+        <p>Detecting objects... This might take a moment.</p>
     </div>
      <div id="error-message">
         <p>Failed to generate the environment. Please try refreshing.</p>

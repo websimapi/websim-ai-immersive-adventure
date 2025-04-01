@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 // --- Configuration ---
 const INITIAL_PROMPT = "A tranquil wilderness campsite at dusk, featuring a crackling campfire casting warm light on nearby tents nestled under towering pine trees. The soft rustling of leaves can be heard in a gentle breeze under a twilight sky.";
@@ -11,6 +12,7 @@ const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
+const labelContainer = document.getElementById('label-container');
 const loadingIndicator = document.getElementById('loading-indicator');
 const errorMessage = document.getElementById('error-message');
 const promptDisplay = document.getElementById('prompt-display');
@@ -19,11 +21,12 @@ const creditsModal = document.getElementById('credits-modal');
 const closeCreditsButton = document.getElementById('close-credits');
 
 // --- State ---
-let scene, camera, renderer, textureLoader;
+let scene, camera, renderer, textureLoader, css2dRenderer;
 let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
 let panoramaMesh; // To hold the sphere mesh
 let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
+let currentLabels = [];
 
 // --- Initialization ---
 async function init() {
@@ -34,17 +37,24 @@ async function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
-    // Position camera slightly forward; it will look at the center by default.
-    // We rotate the camera itself, not move it around.
     camera.position.set(0, 0, 0.1);
-    camera.rotation.order = 'YXZ'; // Set rotation order early
-    camera.rotation.y = totalYaw; // Start camera facing 90 degrees left
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = totalYaw;
 
     // Renderer setup
     renderer = new THREE.WebGLRenderer();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio); // Adjust for high-DPI displays
+    renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(renderer.domElement);
+
+    // CSS2D Renderer Setup
+    css2dRenderer = new CSS2DRenderer();
+    css2dRenderer.setSize(window.innerWidth, window.innerHeight);
+    css2dRenderer.domElement.style.position = 'absolute';
+    css2dRenderer.domElement.style.top = '0px';
+    css2dRenderer.domElement.style.pointerEvents = 'none'; 
+    labelContainer.appendChild(css2dRenderer.domElement); 
+
 
     // Texture Loader
     textureLoader = new THREE.TextureLoader();
@@ -52,13 +62,12 @@ async function init() {
     try {
         // Generate initial panorama
         await generateAndLoadPanorama(INITIAL_PROMPT);
-        loadingIndicator.style.display = 'none'; // Hide loading indicator
     } catch (error) {
         console.error("Initialization failed:", error);
-        loadingIndicator.style.display = 'none'; // Hide loading indicator
-        errorMessage.style.display = 'block'; // Show error message
+        loadingIndicator.style.display = 'none';
+        errorMessage.style.display = 'block';
         errorMessage.querySelector('p').textContent = `Error: ${error.message || 'An unknown error occurred during initialization.'}`;
-        return; // Stop initialization if generation fails
+        return;
     }
 
     // Event Listeners
@@ -71,9 +80,10 @@ async function init() {
 // --- Panorama Generation and Loading ---
 async function generateAndLoadPanorama(prompt) {
     console.log("Generating image for prompt:", prompt);
-    loadingIndicator.style.display = 'block'; // Show loading
-    errorMessage.style.display = 'none'; // Hide error
-    promptDisplay.textContent = `Prompt: ${prompt}`; // Update display
+    loadingIndicator.style.display = 'block';
+    errorMessage.style.display = 'none';
+    promptDisplay.textContent = `Prompt: ${prompt}`;
+    clearLabels(); 
 
     try {
         const imagePrompt = `${prompt}. Photorealistic equirectangular panorama 360 view, ultra high definition.`;
@@ -83,92 +93,166 @@ async function generateAndLoadPanorama(prompt) {
             width: IMAGE_WIDTH,
             height: IMAGE_HEIGHT,
         });
+        const imageUrl = result.url; 
 
-        console.log("Image generated:", result.url);
+        console.log("Image generated:", imageUrl);
 
-        return new Promise((resolve, reject) => {
+        await new Promise((resolve, reject) => {
             textureLoader.load(
-                result.url,
+                imageUrl,
                 (texture) => {
                     console.log("Texture loaded successfully");
 
-                    // Ensure texture wraps correctly for a sphere
                     texture.mapping = THREE.EquirectangularReflectionMapping;
-                    texture.colorSpace = THREE.SRGBColorSpace; // Important for correct colors
+                    texture.colorSpace = THREE.SRGBColorSpace;
 
-                    // Remove previous panorama if it exists
                     if (panoramaMesh) {
                         scene.remove(panoramaMesh);
                         panoramaMesh.geometry.dispose();
-                        if (panoramaMesh.material.map) panoramaMesh.material.map.dispose(); // Dispose texture
-                        panoramaMesh.material.dispose(); // Dispose material
+                        if (panoramaMesh.material.map) panoramaMesh.material.map.dispose();
+                        panoramaMesh.material.dispose();
                     }
 
-                    // Create sphere geometry (large radius, inside-out)
-                    // Use a large radius so the camera is effectively at the center
-                    const geometry = new THREE.SphereGeometry(500, 60, 40); // Radius, width segments, height segments
-                    // Invert the geometry on the x-axis so that the faces point inward
+                    const geometry = new THREE.SphereGeometry(500, 60, 40);
                     geometry.scale(-1, 1, 1);
-
-                    // Create material with the loaded texture
-                    // Use MeshBasicMaterial as lighting is baked into the texture
                     const material = new THREE.MeshBasicMaterial({ map: texture });
-
-                    // Create mesh and add to scene
                     panoramaMesh = new THREE.Mesh(geometry, material);
                     scene.add(panoramaMesh);
 
-                    loadingIndicator.style.display = 'none'; // Hide loading
-                    resolve(); // Resolve the promise when texture is loaded
+                    detectAndLabelObjects(imageUrl)
+                        .then(() => console.log("Object detection and labeling complete."))
+                        .catch(err => {
+                             console.error("Object detection/labeling failed:", err);
+                        })
+                        .finally(() => {
+                            loadingIndicator.style.display = 'none'; 
+                        });
+
+                    resolve(); 
                 },
-                undefined, // onProgress callback (optional)
+                undefined, 
                 (error) => {
                     console.error('Error loading texture:', error);
-                    loadingIndicator.style.display = 'none';
+                    loadingIndicator.style.display = 'none'; 
                     errorMessage.style.display = 'block';
-                    reject(new Error('Failed to load panorama texture.')); // Reject the promise on error
+                    errorMessage.querySelector('p').textContent = 'Error: Failed to load panorama texture.';
+                    reject(new Error('Failed to load panorama texture.')); 
                 }
             );
-        });
+        }); 
 
     } catch (error) {
         console.error("Error generating image:", error);
         loadingIndicator.style.display = 'none';
         errorMessage.style.display = 'block';
-        throw new Error('Failed to generate panorama image.'); // Re-throw specific error
+        errorMessage.querySelector('p').textContent = `Error: ${error.message || 'Failed to generate panorama image.'}`;
+        throw new Error('Failed to generate panorama image.'); 
     }
 }
 
+// --- Object Detection and Labeling (NEW) ---
+async function detectAndLabelObjects(imageUrl) {
+    console.log("Starting object detection for:", imageUrl);
+
+    try {
+        const completion = await websim.chat.completions.create({
+            messages: [
+                 {
+                    role: "system",
+                    content: `Analyze the provided equirectangular panorama image. Identify key objects within the scene.
+Respond ONLY with a JSON array, following this schema: [{ "label": "object name", "x": number, "y": number }]
+'x' and 'y' MUST be normalized coordinates (0.0 to 1.0) representing the CENTER of the detected object in the flat image. 'x' is horizontal (0=left, 1=right), 'y' is vertical (0=top, 1=bottom).
+Example: [{"label": "tent", "x": 0.6, "y": 0.7}, {"label": "tree", "x": 0.2, "y": 0.4}]
+Be concise with labels. Limit results to the 5-10 most prominent objects. Do not include preamble or explanation.`,
+                },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: "Detect objects and their center coordinates in this 360 panorama." },
+                        { type: "image_url", image_url: { url: imageUrl } },
+                    ],
+                },
+            ],
+            json: true, 
+        });
+
+        const detectedObjects = JSON.parse(completion.content);
+        console.log("Detected objects:", detectedObjects);
+
+        if (!Array.isArray(detectedObjects)) {
+            throw new Error("AI response was not a valid JSON array.");
+        }
+
+        const sphereRadius = 500; 
+
+        detectedObjects.forEach(obj => {
+            if (typeof obj.label !== 'string' || typeof obj.x !== 'number' || typeof obj.y !== 'number' || obj.label.trim() === '') {
+                console.warn("Skipping invalid object data:", obj);
+                return; 
+            }
+
+            const x = Math.max(0, Math.min(1, obj.x));
+            const y = Math.max(0, Math.min(1, obj.y));
+
+            const phi = y * Math.PI;
+            const theta = x * 2 * Math.PI;
+
+            const position = new THREE.Vector3();
+            position.setFromSphericalCoords(sphereRadius - 1, phi, theta);
+
+            const labelDiv = document.createElement('div');
+            labelDiv.className = 'object-label';
+            labelDiv.textContent = obj.label;
+
+            const label = new CSS2DObject(labelDiv);
+            label.position.copy(position);
+            scene.add(label);
+            currentLabels.push(label); 
+        });
+
+    } catch (error) {
+        console.error("Error during object detection or label creation:", error);
+        if (errorMessage.style.display === 'none') {
+            console.warn("Object detection could not be completed.");
+        }
+    }
+}
+
+// --- Clear Labels (NEW) ---
+function clearLabels() {
+    currentLabels.forEach(label => {
+        if (label.parent) { 
+             label.parent.remove(label); 
+        }
+        if (label.element && label.element.parentNode) {
+            label.element.parentNode.removeChild(label.element);
+        }
+    });
+    currentLabels = []; 
+    console.log("Cleared previous labels.");
+}
+
+
 // --- Event Listeners ---
 function setupEventListeners() {
-    // Mouse controls
     container.addEventListener('mousedown', onPointerDown);
     container.addEventListener('mousemove', onPointerMove);
     container.addEventListener('mouseup', onPointerUp);
-    container.addEventListener('mouseleave', onPointerUp); // Stop dragging if mouse leaves container
+    container.addEventListener('mouseleave', onPointerUp); 
 
-    // Touch controls (use pointer events for simplicity)
     container.addEventListener('touchstart', onPointerDown, { passive: false });
     container.addEventListener('touchmove', onPointerMove, { passive: false });
     container.addEventListener('touchend', onPointerUp);
     container.addEventListener('touchcancel', onPointerUp);
 
-    // Window resize
     window.addEventListener('resize', onWindowResize);
 
-    // Credits UI Listeners
     creditsIcon.addEventListener('click', openCredits);
     closeCreditsButton.addEventListener('click', closeCredits);
-    // Optional: Close modal when clicking outside of it
-    // creditsModal.addEventListener('click', (e) => {
-    //     if (e.target === creditsModal) { // Only close if backdrop is clicked, not content
-    //         closeCredits();
-    //     }
-    // });
 }
 
 function getClientPosition(event) {
-    if (event.touches && event.touches.length > 0) { // Check length too
+    if (event.touches && event.touches.length > 0) {
         return { x: event.touches[0].clientX, y: event.touches[0].clientY };
     } else {
         return { x: event.clientX, y: event.clientY };
@@ -176,23 +260,20 @@ function getClientPosition(event) {
 }
 
 function onPointerDown(event) {
-    // Check if it's the primary button for mouse or single touch
-    if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
-    if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
+    if ((event.button && event.button !== 0) && !event.touches) return; 
+    if (event.touches && event.touches.length > 1) return; 
 
     isDragging = true;
     const pos = getClientPosition(event);
     previousMousePosition.x = pos.x;
     previousMousePosition.y = pos.y;
-    container.style.cursor = 'grabbing'; // Change cursor
+    container.style.cursor = 'grabbing'; 
 
-    // Prevent default behavior like text selection or page scrolling on touch
     if (event.touches) event.preventDefault();
 }
 
 function onPointerMove(event) {
     if (!isDragging) return;
-    // Prevent scrolling while dragging on touch devices
     if (event.touches) event.preventDefault();
 
     const pos = getClientPosition(event);
@@ -208,75 +289,55 @@ function onPointerMove(event) {
 function onPointerUp() {
     if (!isDragging) return;
     isDragging = false;
-    container.style.cursor = 'grab'; // Restore cursor
+    container.style.cursor = 'grab'; 
 }
 
 function rotateCamera(deltaX, deltaY) {
-    // Calculate rotation angles based on pointer movement
     const yawAngle = -deltaX * MOUSE_SENSITIVITY;
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
-    // --- Yaw (Horizontal Rotation) ---
-    // Calculate potential new total yaw relative to the initial offset
     const potentialYaw = totalYaw + yawAngle;
-
-    // Define yaw limits relative to the starting angle (+/- 100 degrees from the start)
-    // Start angle is Math.PI / 2
     const startAngle = Math.PI / 2;
-    const yawLimitRange = (100 * Math.PI) / 180; // +/- 100 degrees in radians
+    const yawLimitRange = (100 * Math.PI) / 180;
     const minYaw = startAngle - yawLimitRange;
     const maxYaw = startAngle + yawLimitRange;
-
-    // Clamp the total yaw
     totalYaw = Math.max(minYaw, Math.min(maxYaw, potentialYaw));
-
-    // Apply the clamped yaw to the camera
     camera.rotation.y = totalYaw;
 
-    // --- Pitch (Vertical Rotation) ---
-    // Apply pitch rotation directly to camera's x rotation and clamp it
-    const maxPitch = Math.PI / 2 - 0.05; // Limit to slightly less than 90 degrees up/down
+    const maxPitch = Math.PI / 2 - 0.05;
     const minPitch = -Math.PI / 2 + 0.05;
     camera.rotation.x += pitchAngle;
     camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
-
-    // Rotation order 'YXZ' is already set in init()
 }
 
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio); // Update pixel ratio on resize too
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    css2dRenderer.setSize(window.innerWidth, window.innerHeight); 
 }
 
 // --- Credits UI Functions ---
 function openCredits() {
     creditsModal.style.display = 'block';
-    // Optional: Pause interaction with panorama while modal is open
-    // isDragging = false; // Ensure dragging stops
-    // container.style.pointerEvents = 'none';
 }
 
 function closeCredits() {
     creditsModal.style.display = 'none';
-    // Optional: Restore interaction
-    // container.style.pointerEvents = 'auto';
 }
 
 // --- Animation Loop ---
 function animate() {
-    requestAnimationFrame(animate); // Request next frame
-
-    // No manual updates needed here if controls directly modify camera rotation
-
-    renderer.render(scene, camera); // Render the scene
+    requestAnimationFrame(animate); 
+    renderer.render(scene, camera); 
+    css2dRenderer.render(scene, camera); 
 }
 
 // --- Start ---
 init().catch(err => {
     console.error("Initialization failed in catch block:", err);
-    // Ensure loading is hidden and error is shown even if init promise rejects late
     loadingIndicator.style.display = 'none';
     errorMessage.style.display = 'block';
     errorMessage.querySelector('p').textContent = `Error: ${err.message || 'An unknown error occurred during initialization.'}`;
