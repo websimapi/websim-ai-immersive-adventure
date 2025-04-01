@@ -38,6 +38,7 @@ const vertexShader = `
     }
 `;
 
+// Corrected fragment shader using .x, .y, .z for HSL components
 const fragmentShader = `
     uniform sampler2D panoramaTexture;
     uniform float time;
@@ -49,7 +50,7 @@ const fragmentShader = `
 
     // --- HSL Conversion ---
     // Function to convert RGB to HSL (approximated, good enough for thresholding)
-    // Returns vec3(hue, saturation, lightness)
+    // Returns vec3(hue, saturation, lightness) -> (x, y, z)
     vec3 rgb2hsl(vec3 color) {
         float maxC = max(color.r, max(color.g, color.b));
         float minC = min(color.r, min(color.g, color.b));
@@ -75,7 +76,7 @@ const fragmentShader = `
     // --- Main Fragment Shader ---
     void main() {
         vec4 texColor = texture2D(panoramaTexture, vUv);
-        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness)
+        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness) -> (x, y, z)
 
         // Check if the color qualifies as "neon"
         // Use .y for saturation and .z for lightness
@@ -87,9 +88,9 @@ const fragmentShader = `
             // Apply a subtle pulsing/shifting effect for neon colors
             // Combine time and vertical position for variation
             // Use .x for hue
-            float pulseSpeed = 2.0 + hsl.x * 3.0; // Vary speed based on hue
-            float pulseIntensity = 0.05 + (hsl.y - NEON_SAT_THRESHOLD) * 0.1; // More saturated = more intense pulse
-             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue (.x)
+            float pulseSpeed = 2.0 + hsl.x * 3.0; // Vary speed based on hue (x)
+            float pulseIntensity = 0.05 + (hsl.y - NEON_SAT_THRESHOLD) * 0.1; // More saturated (y) = more intense pulse
+             // Use sine wave for smooth pulsing, vary phase with vertical UV and hue (x)
             float pulse = sin(time * pulseSpeed + vUv.y * 10.0 + hsl.x * 1.5) * pulseIntensity + (1.0 - pulseIntensity * 0.5);
 
              // Modulate brightness
@@ -97,7 +98,7 @@ const fragmentShader = `
 
              // Optional: Add a very subtle hue shift (can be performance intensive if using HSL->RGB conversion)
              // float hueShiftAmount = sin(time * 0.5 + vUv.x * 5.0) * 0.01; // Slow horizontal shift
-             // vec3 shiftedHsl = vec3(mod(hsl.x + hueShiftAmount, 1.0), hsl.y, hsl.z * pulse);
+             // vec3 shiftedHsl = vec3(mod(hsl.x + hueShiftAmount, 1.0), hsl.y, hsl.z * pulse); // Access hsl components correctly (x, y, z)
              // finalColor = hsl2rgb(shiftedHsl); // Requires hsl2rgb function
         }
 
@@ -179,12 +180,11 @@ async function generateAndLoadPanorama(prompt) {
                     if (panoramaMesh) {
                         scene.remove(panoramaMesh);
                         panoramaMesh.geometry.dispose();
-                        // ShaderMaterial handles its own texture disposal? Check docs.
-                        // For safety, dispose the texture if the material exists and has a map uniform
+                        // Dispose the old texture and material explicitly
                         if (shaderMaterial && shaderMaterial.uniforms.panoramaTexture.value) {
                              shaderMaterial.uniforms.panoramaTexture.value.dispose();
                         }
-                         if (shaderMaterial) shaderMaterial.dispose(); // Dispose material
+                         if (shaderMaterial) shaderMaterial.dispose();
                     }
 
                     // Create sphere geometry (large radius, inside-out)
@@ -311,21 +311,8 @@ function rotateCamera(deltaX, deltaY) {
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
     // --- Yaw (Horizontal Rotation) ---
-    // Calculate potential new total yaw relative to the initial offset
-    const potentialYaw = totalYaw + yawAngle;
-
-    // Define yaw limits relative to the starting angle (+/- 100 degrees from the start)
-    // Start angle is Math.PI / 2
-    const startAngle = Math.PI / 2;
-    const yawLimitRange = (100 * Math.PI) / 180; // +/- 100 degrees in radians
-    const minYaw = startAngle - yawLimitRange;
-    const maxYaw = startAngle + yawLimitRange;
-
-    // Clamp the total yaw
-    totalYaw = Math.max(minYaw, Math.min(maxYaw, potentialYaw));
-
-    // Apply the clamped yaw to the camera
-    camera.rotation.y = totalYaw;
+    // Apply yaw rotation directly to camera's y rotation. We use rotation.order 'YXZ'
+    camera.rotation.y += yawAngle;
 
     // --- Pitch (Vertical Rotation) ---
     // Apply pitch rotation directly to camera's x rotation and clamp it
@@ -335,7 +322,9 @@ function rotateCamera(deltaX, deltaY) {
     camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
 
     // Rotation order 'YXZ' is already set in init()
+    // No need to clamp Yaw here if we want infinite horizontal rotation
 }
+
 
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
