@@ -23,27 +23,34 @@
             top: 0;
             left: 0;
             cursor: grab;
+            z-index: 1; /* Behind UI elements */
         }
         #panorama-container:active {
             cursor: grabbing;
         }
+        .ui-overlay {
+             position: absolute;
+             background-color: rgba(0, 0, 0, 0.7);
+             padding: 15px;
+             border-radius: 8px;
+             text-align: center;
+             z-index: 10; /* Ensure it's above the canvas */
+             max-height: 80vh; /* Limit height */
+             overflow-y: auto; /* Allow scrolling if content exceeds max height */
+        }
+
         #loading-indicator, #error-message {
-            position: absolute;
+            /* Use shared overlay class */
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
         }
          #error-message {
-            color: red;
+            color: #ff8888; /* Changed back to a lighter red */
             display: none; /* Hidden by default */
          }
 
         #prompt-display {
-            position: absolute;
             bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
@@ -53,25 +60,81 @@
             font-size: 0.9em;
             max-width: 80%;
             text-align: center;
+            z-index: 10;
         }
+
+        #object-detection-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.75);
+            padding: 10px 15px;
+            border-radius: 8px;
+            z-index: 10;
+            max-height: calc(100vh - 100px); /* Prevent overlapping with prompt */
+            overflow-y: auto;
+            font-size: 0.85em;
+            max-width: 200px;
+            display: none; /* Hidden initially */
+        }
+         #object-detection-container h3 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            font-size: 1em;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 5px;
+         }
+        #object-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        #object-list li {
+            margin-bottom: 4px;
+            text-transform: capitalize;
+        }
+        #object-list .score {
+            color: #aaa;
+            font-size: 0.9em;
+            margin-left: 5px;
+        }
+        #detection-status {
+            font-style: italic;
+            color: #bbb;
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+
     </style>
 </head>
 <body>
     <div id="panorama-container"></div>
-    <div id="loading-indicator">
+
+    <div id="loading-indicator" class="ui-overlay">
         <p>Generating immersive environment...</p>
-        <p>This might take a moment.</p>
+        <p id="loading-subtext">This might take a moment.</p>
     </div>
-     <div id="error-message">
+     <div id="error-message" class="ui-overlay">
         <p>Failed to generate the environment. Please try refreshing.</p>
      </div>
+
     <div id="prompt-display">Prompt: Initializing...</div>
+
+    <div id="object-detection-container">
+        <h3>Detected Objects</h3>
+        <div id="detection-status">Detecting...</div>
+        <ul id="object-list">
+            <!-- Detected objects will be listed here -->
+        </ul>
+    </div>
 
     <script type="importmap">
     {
         "imports": {
             "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/",
+            "@tensorflow/tfjs": "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.19.0/dist/tf.es2017.min.js",
+            "@tensorflow-models/coco-ssd": "https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"
         }
     }
     </script>
