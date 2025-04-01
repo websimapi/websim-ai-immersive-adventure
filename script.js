@@ -20,7 +20,7 @@ let scene, camera, renderer, textureLoader;
 let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
 let panoramaMesh; // To hold the sphere mesh
-let totalYaw = 0; // Keep track of total horizontal rotation
+let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
 
 // --- Initialization ---
 async function init() {
@@ -35,6 +35,7 @@ async function init() {
     // We rotate the camera itself, not move it around.
     camera.position.set(0, 0, 0.1);
     camera.rotation.order = 'YXZ'; // Set rotation order early
+    camera.rotation.y = totalYaw; // Start camera facing 90 degrees left
 
     // Renderer setup
     renderer = new THREE.WebGLRenderer();
@@ -203,18 +204,21 @@ function rotateCamera(deltaX, deltaY) {
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
     // --- Yaw (Horizontal Rotation) ---
-    // Calculate potential new total yaw
+    // Calculate potential new total yaw relative to the initial offset
     const potentialYaw = totalYaw + yawAngle;
 
-    // Define yaw limits (200 degrees total = +/- 100 degrees from center)
-    const yawLimit = (100 * Math.PI) / 180; // +/- 100 degrees in radians
+    // Define yaw limits relative to the starting angle (+/- 100 degrees from the start)
+    // Start angle is Math.PI / 2
+    const startAngle = Math.PI / 2;
+    const yawLimitRange = (100 * Math.PI) / 180; // +/- 100 degrees in radians
+    const minYaw = startAngle - yawLimitRange;
+    const maxYaw = startAngle + yawLimitRange;
 
     // Clamp the total yaw
-    totalYaw = Math.max(-yawLimit, Math.min(yawLimit, potentialYaw));
+    totalYaw = Math.max(minYaw, Math.min(maxYaw, potentialYaw));
 
     // Apply the clamped yaw to the camera
     camera.rotation.y = totalYaw;
-
 
     // --- Pitch (Vertical Rotation) ---
     // Apply pitch rotation directly to camera's x rotation and clamp it
