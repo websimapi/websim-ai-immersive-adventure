@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { vertexShader, fragmentShader } from './shaders.js';
 
 // --- Configuration ---
 const INITIAL_PROMPT = "A futuristic cyberpunk cityscape at night, filled with towering skyscrapers adorned with vibrant, glowing neon signs and advertisements. Flying vehicles zip between buildings under a dark, rainy sky reflected in wet streets.";
@@ -8,8 +9,6 @@ const CAMERA_FOV = 75; // Field of View
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1000;
 const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
-const NEON_SATURATION_THRESHOLD = 0.70; // Lowered slightly to catch more colors
-const NEON_LIGHTNESS_THRESHOLD = 0.45; // Lowered slightly
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
@@ -28,137 +27,6 @@ let panoramaMesh; // To hold the sphere mesh
 let totalYaw = Math.PI / 2; // Keep track of total horizontal rotation, START FACING LEFT
 let clock = new THREE.Clock(); // Clock for time uniform
 let shaderMaterial; // Material for neon effect
-
-// --- Shader Definitions ---
-const vertexShader = `
-    varying vec2 vUv;
-    void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-`;
-
-// --- Enhanced Fragment Shader for Neon Effects ---
-const fragmentShader = `
-    uniform sampler2D panoramaTexture;
-    uniform float time;
-    varying vec2 vUv;
-
-    // Constants for neon detection
-    const float NEON_SAT_THRESHOLD = ${NEON_SATURATION_THRESHOLD.toFixed(2)};
-    const float NEON_LUM_THRESHOLD = ${NEON_LIGHTNESS_THRESHOLD.toFixed(2)};
-
-    // --- HSL Conversion ---
-    // Function to convert RGB to HSL (approximated)
-    // Returns vec3(hue, saturation, lightness) -> (x, y, z)
-    vec3 rgb2hsl(vec3 color) {
-        float maxC = max(color.r, max(color.g, color.b));
-        float minC = min(color.r, min(color.g, color.b));
-        float delta = maxC - minC;
-        float h = 0.0;
-        float s = 0.0;
-        float l = (maxC + minC) / 2.0;
-
-        if (delta > 0.0001) { // Check against a small epsilon
-            // Calculate saturation
-            s = l > 0.5 ? delta / (2.0 - maxC - minC) : delta / (maxC + minC);
-
-            // Calculate hue (denominator 'delta' is > 0.0001 here)
-            if (maxC == color.r) {
-                h = (color.g - color.b) / delta + (color.g < color.b ? 6.0 : 0.0);
-            } else if (maxC == color.g) {
-                h = (color.b - color.r) / delta + 2.0;
-            } else { // maxC == color.b
-                h = (color.r - color.g) / delta + 4.0;
-            }
-            h /= 6.0; // Normalize hue to [0, 1]
-        }
-        // Clamp saturation for safety
-        s = clamp(s, 0.0, 1.0);
-        return vec3(h, s, l);
-    }
-
-    // --- Noise function (Simple 2D hash) ---
-    // Provides pseudo-random values based on input coordinates
-    float random(vec2 st) {
-        return fract(sin(dot(st.xy, vec2(12.9898, 78.233))) * 43758.5453123);
-    }
-
-    // --- Main Fragment Shader ---
-    void main() {
-        vec2 baseUv = vUv;
-        vec4 texColor = texture2D(panoramaTexture, baseUv);
-
-        // Early exit for transparent pixels if needed (unlikely for panorama)
-        // if (texColor.a < 0.1) discard;
-
-        vec3 hsl = rgb2hsl(texColor.rgb); // hsl = vec3(hue, saturation, lightness) -> (x, y, z)
-
-        // Check if the color qualifies as "neon" using thresholds
-        // Using .y for saturation and .z for lightness
-        bool isNeon = (hsl.y >= NEON_SAT_THRESHOLD && hsl.z >= NEON_LUM_THRESHOLD);
-
-        vec3 finalColor = texColor.rgb;
-
-        if (isNeon) {
-            // --- 1. Calculate Intensity Factors ---
-            // How much it exceeds thresholds (smoothly transitioning from 0 to 1)
-            float satFactor = smoothstep(NEON_SAT_THRESHOLD, NEON_SAT_THRESHOLD + 0.15, hsl.y); // Gradual increase over 0.15 saturation range
-            float lumFactor = smoothstep(NEON_LUM_THRESHOLD, NEON_LUM_THRESHOLD + 0.25, hsl.z); // Gradual increase over 0.25 lightness range
-            // Combine factors, weighting saturation more
-            float neonIntensity = clamp(satFactor * 0.7 + lumFactor * 0.3, 0.0, 1.0);
-
-            // --- 2. Brightness Pulse ---
-            float pulseSpeed = 1.5 + hsl.x * 4.0 + neonIntensity * 2.5; // Base speed + hue variation + intensity boost
-            float pulseMagnitude = 0.08 + neonIntensity * 0.22; // Base magnitude + intensity contribution, max ~0.3
-            pulseMagnitude = clamp(pulseMagnitude, 0.05, 0.3); // Clamp magnitude range
-
-            // Noise for spatial variation in pulse phase/speed - use a grid
-            vec2 noiseCoord = floor(baseUv * vec2(60.0, 30.0)) / vec2(60.0, 30.0); // Coarser noise grid
-            float noiseVal = random(noiseCoord + floor(time * 2.0)); // Noise changes slowly over time
-
-            // Base pulse wave using sine
-            float pulseWave = sin(time * pulseSpeed + baseUv.y * 12.0 + hsl.x * 3.14 + noiseVal * 6.28); // Ranges [-1, 1]
-
-            // Modulate brightness: 1.0 = base, +/- pulseMagnitude
-            float brightnessMultiplier = 1.0 + pulseWave * pulseMagnitude;
-            // Ensure minimum brightness to avoid black spots
-            brightnessMultiplier = max(1.0 - pulseMagnitude * 0.8, brightnessMultiplier); // Allow dimming but not too much
-
-            // Apply brightness pulse to the original color
-            vec3 pulsedColor = texColor.rgb * brightnessMultiplier;
-
-            // --- 3. Subtle Distortion/Wiggle ---
-            // Use time and noise to create a small offset in texture coordinates
-            float distortSpeed = 1.0 + noiseVal * 1.5 + neonIntensity * 1.0;
-            // Make distortion stronger based on intensity but keep it small overall
-            float distortMagnitude = (0.0003 + neonIntensity * 0.001) * (0.8 + noiseVal * 0.4); // Base + intensity + noise modulation
-            distortMagnitude = clamp(distortMagnitude, 0.0, 0.0015); // Clamp max distortion
-
-            // Calculate offset using sine/cosine for wave-like motion
-            float offsetX = sin(time * distortSpeed + baseUv.y * 25.0 + noiseVal * 5.0) * distortMagnitude;
-            float offsetY = cos(time * distortSpeed * 0.7 + baseUv.x * 25.0 + noiseVal * 8.0) * distortMagnitude;
-
-            // Sample texture again with distorted UVs
-            // Use the brightness multiplier on the distorted sample too, for consistency
-            vec3 distortedColor = texture2D(panoramaTexture, baseUv + vec2(offsetX, offsetY)).rgb * brightnessMultiplier;
-
-            // Blend the pulsed color with the distorted sample for a shimmer/movement effect
-            // Blend amount increases with neon intensity
-            float blendFactor = neonIntensity * (0.3 + noiseVal * 0.3); // Base blend + noise variation
-            finalColor = mix(pulsedColor, distortedColor, clamp(blendFactor, 0.0, 0.6)); // Mix based on intensity/noise, max 60% distorted
-
-            // --- 4. Additive Glow (Optional & Subtle) ---
-            // Enhance brightness slightly, especially when the pulse is high
-            float glowAmount = neonIntensity * max(0.0, pulseWave) * 0.1; // Glow only on the bright part of the pulse
-            finalColor += finalColor * glowAmount; // Additive glow based on current color and intensity
-        }
-
-        // Final output: Clamp color values to [0, 1] range and preserve original alpha
-        gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), texColor.a);
-    }
-`;
-
 
 // --- Initialization ---
 async function init() {
@@ -248,14 +116,14 @@ async function generateAndLoadPanorama(prompt) {
                     const geometry = new THREE.SphereGeometry(500, 64, 32); // Increased segments slightly
                     geometry.scale(-1, 1, 1); // Invert geometry normals so inside is visible
 
-                    // --- Create Shader Material ---
+                    // --- Create Shader Material (Using imported shaders) ---
                     shaderMaterial = new THREE.ShaderMaterial({
                         uniforms: {
                             time: { value: 0.0 },
                             panoramaTexture: { value: texture }
                         },
-                        vertexShader: vertexShader,
-                        fragmentShader: fragmentShader, // Use the new enhanced shader
+                        vertexShader: vertexShader, // Imported from shaders.js
+                        fragmentShader: fragmentShader, // Imported from shaders.js
                         side: THREE.DoubleSide // Use DoubleSide for safety
                     });
 
