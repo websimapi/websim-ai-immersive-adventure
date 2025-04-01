@@ -8,9 +8,6 @@ const CAMERA_FOV = 75; // Field of View
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 1000;
 const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
-const MAX_HORIZONTAL_ROTATION = (315 * Math.PI) / 180; // 315 degrees in radians
-const MAX_PITCH = Math.PI / 2 - 0.05; // Limit vertical look slightly less than 90 degrees
-const MIN_PITCH = -Math.PI / 2 + 0.05;
 
 // --- DOM Elements ---
 const container = document.getElementById('panorama-container');
@@ -23,6 +20,7 @@ let scene, camera, renderer, textureLoader;
 let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
 let panoramaMesh; // To hold the sphere mesh
+let totalYaw = 0; // Keep track of total horizontal rotation
 
 // --- Initialization ---
 async function init() {
@@ -36,6 +34,7 @@ async function init() {
     // Position camera slightly forward; it will look at the center by default.
     // We rotate the camera itself, not move it around.
     camera.position.set(0, 0, 0.1);
+    camera.rotation.order = 'YXZ'; // Set rotation order early
 
     // Renderer setup
     renderer = new THREE.WebGLRenderer();
@@ -200,28 +199,31 @@ function onPointerUp() {
 
 function rotateCamera(deltaX, deltaY) {
     // Calculate rotation angles based on pointer movement
-    // We rotate the camera directly.
-
-    // Yaw: Rotation around the world's Y-axis (vertical axis)
     const yawAngle = -deltaX * MOUSE_SENSITIVITY;
-    const maxYaw = MAX_HORIZONTAL_ROTATION / 2;
-    const minYaw = -MAX_HORIZONTAL_ROTATION / 2;
-
-    // Apply yaw rotation and clamp it
-    camera.rotation.y += yawAngle;
-    camera.rotation.y = Math.max(minYaw, Math.min(maxYaw, camera.rotation.y));
-
-    // Pitch: Rotation around the camera's local X-axis (horizontal axis running left-right through the camera)
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
 
-    // Apply pitch rotation and clamp it
-    camera.rotation.x += pitchAngle;
-    camera.rotation.x = Math.max(MIN_PITCH, Math.min(MAX_PITCH, camera.rotation.x));
+    // --- Yaw (Horizontal Rotation) ---
+    // Calculate potential new total yaw
+    const potentialYaw = totalYaw + yawAngle;
 
-    // Set the rotation order. 'YXZ' means Yaw is applied first, then Pitch, then Roll.
-    // This order is common for first-person views as it prevents gimbal lock issues
-    // when looking straight up or down and trying to yaw.
-    camera.rotation.order = 'YXZ';
+    // Define yaw limits (200 degrees total = +/- 100 degrees from center)
+    const yawLimit = (100 * Math.PI) / 180; // +/- 100 degrees in radians
+
+    // Clamp the total yaw
+    totalYaw = Math.max(-yawLimit, Math.min(yawLimit, potentialYaw));
+
+    // Apply the clamped yaw to the camera
+    camera.rotation.y = totalYaw;
+
+
+    // --- Pitch (Vertical Rotation) ---
+    // Apply pitch rotation directly to camera's x rotation and clamp it
+    const maxPitch = Math.PI / 2 - 0.05; // Limit to slightly less than 90 degrees up/down
+    const minPitch = -Math.PI / 2 + 0.05;
+    camera.rotation.x += pitchAngle;
+    camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
+
+    // Rotation order 'YXZ' is already set in init()
 }
 
 function onWindowResize() {
