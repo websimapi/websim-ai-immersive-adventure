@@ -15,249 +15,6 @@ const loadingIndicator = document.getElementById('loading-indicator');
 const errorMessage = document.getElementById('error-message');
 const promptDisplay = document.getElementById('prompt-display');
 
-
-// --- State ---
-let scene, camera, renderer, textureLoader;
-let isDragging = false;
-let previousMousePosition = { x: 0, y: 0 };
-let panoramaMesh; // To hold the sphere mesh
-
-// --- Initialization ---
-async function init() {
-    promptDisplay.textContent = `Prompt: ${INITIAL_PROMPT}`;
-
-    // Scene setup
-    scene = new THREE.Scene();
-
-    // Camera setup
-    camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
-    camera.position.set(0, 0, 0.1); // Start slightly inside the sphere
-
-    // Renderer setup
-    renderer = new THREE.WebGLRenderer();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    container.appendChild(renderer.domElement);
-
-    // Texture Loader
-    textureLoader = new THREE.TextureLoader();
-
-    try {
-        // Generate initial panorama
-        await generateAndLoadPanorama(INITIAL_PROMPT);
-        loadingIndicator.style.display = 'none'; // Hide loading indicator
-    } catch (error) {
-        console.error("Initialization failed:", error);
-        loadingIndicator.style.display = 'none'; // Hide loading indicator
-        errorMessage.style.display = 'block'; // Show error message
-        return; // Stop initialization if generation fails
-    }
-
-
-    // Event Listeners
-    setupEventListeners();
-
-    // Start animation loop
-    animate();
-}
-
-// --- Panorama Generation and Loading ---
-async function generateAndLoadPanorama(prompt) {
-    console.log("Generating image for prompt:", prompt);
-    loadingIndicator.style.display = 'block'; // Show loading
-    errorMessage.style.display = 'none'; // Hide error
-
-    try {
-        const result = await websim.imageGen({
-            prompt: prompt + " equirectangular panorama 360 view", // Append panorama instructions
-            width: IMAGE_WIDTH,
-            height: IMAGE_HEIGHT,
-        });
-
-        console.log("Image generated:", result.url);
-
-        return new Promise((resolve, reject) => {
-            textureLoader.load(
-                result.url,
-                (texture) => {
-                    console.log("Texture loaded successfully");
-
-                    // Ensure texture wraps correctly for a sphere
-                    texture.mapping = THREE.EquirectangularReflectionMapping; // Use if image is equirectangular
-                     texture.colorSpace = THREE.SRGBColorSpace; // Correct color space
-
-                    // Remove previous panorama if it exists
-                    if (panoramaMesh) {
-                        scene.remove(panoramaMesh);
-                        panoramaMesh.geometry.dispose();
-                        panoramaMesh.material.dispose();
-                    }
-
-                    // Create sphere geometry (inside-out)
-                    const geometry = new THREE.SphereGeometry(500, 60, 40); // Radius, width segments, height segments
-                    geometry.scale(-1, 1, 1); // Invert the geometry on the x-axis so that the faces point inward
-
-                    // Create material with the loaded texture
-                    const material = new THREE.MeshBasicMaterial({ map: texture });
-
-                    // Create mesh and add to scene
-                    panoramaMesh = new THREE.Mesh(geometry, material);
-                    scene.add(panoramaMesh);
-
-                    loadingIndicator.style.display = 'none'; // Hide loading
-                    resolve(); // Resolve the promise when texture is loaded
-                },
-                undefined, // onProgress callback (optional)
-                (error) => {
-                    console.error('Error loading texture:', error);
-                    loadingIndicator.style.display = 'none';
-                     errorMessage.style.display = 'block';
-                    reject(error); // Reject the promise on error
-                }
-            );
-        });
-
-    } catch (error) {
-        console.error("Error generating image:", error);
-         loadingIndicator.style.display = 'none';
-         errorMessage.style.display = 'block';
-        throw error; // Re-throw error to be caught by init
-    }
-}
-
-
-// --- Event Listeners ---
-function setupEventListeners() {
-    // Mouse controls
-    container.addEventListener('mousedown', onMouseDown);
-    container.addEventListener('mousemove', onMouseMove);
-    container.addEventListener('mouseup', onMouseUp);
-    container.addEventListener('mouseleave', onMouseUp); // Stop dragging if mouse leaves container
-
-    // Touch controls (basic implementation)
-    container.addEventListener('touchstart', onTouchStart, { passive: false });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd);
-    container.addEventListener('touchcancel', onTouchEnd);
-
-
-    // Window resize
-    window.addEventListener('resize', onWindowResize);
-}
-
-function onMouseDown(event) {
-    isDragging = true;
-    previousMousePosition.x = event.clientX;
-    previousMousePosition.y = event.clientY;
-    container.style.cursor = 'grabbing'; // Change cursor
-}
-
-function onMouseMove(event) {
-    if (!isDragging) return;
-
-    const deltaX = event.clientX - previousMousePosition.x;
-    const deltaY = event.clientY - previousMousePosition.y;
-
-    rotateCamera(deltaX, deltaY);
-
-    previousMousePosition.x = event.clientX;
-    previousMousePosition.y = event.clientY;
-}
-
-function onMouseUp() {
-    isDragging = false;
-     container.style.cursor = 'grab'; // Restore cursor
-}
-
-
-function onTouchStart(event) {
-    if (event.touches.length === 1) {
-        isDragging = true;
-        previousMousePosition.x = event.touches[0].clientX;
-        previousMousePosition.y = event.touches[0].clientY;
-         event.preventDefault(); // Prevent default touch behavior like scrolling
-    }
-}
-
-function onTouchMove(event) {
-    if (!isDragging || event.touches.length !== 1) return;
-     event.preventDefault(); // Prevent default touch behavior
-
-    const deltaX = event.touches[0].clientX - previousMousePosition.x;
-    const deltaY = event.touches[0].clientY - previousMousePosition.y;
-
-    rotateCamera(deltaX, deltaY);
-
-
-    previousMousePosition.x = event.touches[0].clientX;
-    previousMousePosition.y = event.touches[0].clientY;
-}
-
-function onTouchEnd() {
-    isDragging = false;
-}
-
-
-function rotateCamera(deltaX, deltaY) {
-    // Calculate rotation angles based on mouse movement
-    // Note: We rotate the camera's parent (the scene implicitly via camera's rotation object)
-    // around the Y (up) and X (right) axes.
-
-    const yawAngle = -deltaX * MOUSE_SENSITIVITY; // Rotation around Y-axis (left/right)
-    const pitchAngle = -deltaY * MOUSE_SENSITIVITY; // Rotation around X-axis (up/down)
-
-    // Apply yaw rotation (around the world's Y axis)
-    camera.rotation.y += yawAngle;
-
-
-    // Apply pitch rotation (around the camera's local X axis)
-    // Clamp pitch to prevent flipping upside down
-    const maxPitch = Math.PI / 2 - 0.01; // Just shy of 90 degrees
-    const minPitch = -Math.PI / 2 + 0.01;
-    camera.rotation.x += pitchAngle;
-    camera.rotation.x = Math.max(minPitch, Math.min(maxPitch, camera.rotation.x));
-
-
-    // Ensure the camera's rotation order is suitable for FPS controls
-    camera.rotation.order = 'YXZ'; // Yaw, Pitch, Roll - common for FPS
-}
-
-
-function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-}
-
-// --- Animation Loop ---
-function animate() {
-    requestAnimationFrame(animate); // Request next frame
-
-    // No need to manually update camera rotation here if done by mouse/touch events
-
-    renderer.render(scene, camera); // Render the scene
-}
-
-// --- Start ---
-init();
-
-import * as THREE from 'three';
-
-// --- Configuration ---
-const INITIAL_PROMPT = "A tranquil wilderness campsite at dusk, featuring a crackling campfire casting warm light on nearby tents nestled under towering pine trees. The soft rustling of leaves can be heard in a gentle breeze under a twilight sky.";
-const IMAGE_WIDTH = 3840;
-const IMAGE_HEIGHT = 2160;
-const CAMERA_FOV = 75; // Field of View
-const CAMERA_NEAR = 0.1;
-const CAMERA_FAR = 1000;
-const MOUSE_SENSITIVITY = 0.002; // Adjust for faster/slower panning
-
-// --- DOM Elements ---
-const container = document.getElementById('panorama-container');
-const loadingIndicator = document.getElementById('loading-indicator');
-const errorMessage = document.getElementById('error-message');
-const promptDisplay = document.getElementById('prompt-display');
-
-
 // --- State ---
 let scene, camera, renderer, textureLoader;
 let isDragging = false;
@@ -294,9 +51,9 @@ async function init() {
         console.error("Initialization failed:", error);
         loadingIndicator.style.display = 'none'; // Hide loading indicator
         errorMessage.style.display = 'block'; // Show error message
+        errorMessage.querySelector('p').textContent = `Error: ${error.message || 'An unknown error occurred during initialization.'}`;
         return; // Stop initialization if generation fails
     }
-
 
     // Event Listeners
     setupEventListeners();
@@ -311,7 +68,6 @@ async function generateAndLoadPanorama(prompt) {
     loadingIndicator.style.display = 'block'; // Show loading
     errorMessage.style.display = 'none'; // Hide error
     promptDisplay.textContent = `Prompt: ${prompt}`; // Update display
-
 
     try {
         const imagePrompt = `${prompt}. Photorealistic equirectangular panorama 360 view, ultra high definition.`;
@@ -371,12 +127,11 @@ async function generateAndLoadPanorama(prompt) {
 
     } catch (error) {
         console.error("Error generating image:", error);
-         loadingIndicator.style.display = 'none';
-         errorMessage.style.display = 'block';
+        loadingIndicator.style.display = 'none';
+        errorMessage.style.display = 'block';
         throw new Error('Failed to generate panorama image.'); // Re-throw specific error
     }
 }
-
 
 // --- Event Listeners ---
 function setupEventListeners() {
@@ -392,13 +147,12 @@ function setupEventListeners() {
     container.addEventListener('touchend', onPointerUp);
     container.addEventListener('touchcancel', onPointerUp);
 
-
     // Window resize
     window.addEventListener('resize', onWindowResize);
 }
 
 function getClientPosition(event) {
-     if (event.touches) {
+    if (event.touches && event.touches.length > 0) { // Check length too
         return { x: event.touches[0].clientX, y: event.touches[0].clientY };
     } else {
         return { x: event.clientX, y: event.clientY };
@@ -407,8 +161,8 @@ function getClientPosition(event) {
 
 function onPointerDown(event) {
     // Check if it's the primary button for mouse or single touch
-     if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
-     if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
+    if ((event.button && event.button !== 0) && !event.touches) return; // Ignore right/middle clicks
+    if (event.touches && event.touches.length > 1) return; // Ignore multi-touch gestures for now
 
     isDragging = true;
     const pos = getClientPosition(event);
@@ -422,7 +176,7 @@ function onPointerDown(event) {
 
 function onPointerMove(event) {
     if (!isDragging) return;
-     // Prevent scrolling while dragging on touch devices
+    // Prevent scrolling while dragging on touch devices
     if (event.touches) event.preventDefault();
 
     const pos = getClientPosition(event);
@@ -438,9 +192,8 @@ function onPointerMove(event) {
 function onPointerUp() {
     if (!isDragging) return;
     isDragging = false;
-     container.style.cursor = 'grab'; // Restore cursor
+    container.style.cursor = 'grab'; // Restore cursor
 }
-
 
 function rotateCamera(deltaX, deltaY) {
     // Calculate rotation angles based on pointer movement
@@ -452,7 +205,6 @@ function rotateCamera(deltaX, deltaY) {
     // However, since we clamp pitch first and use YXZ order, it effectively behaves like world Y rotation initially.
     // A more robust solution might involve quaternions or rotating a parent object, but this is simpler for now.
     camera.rotation.y += yawAngle;
-
 
     // Pitch: Rotation around the camera's local X-axis (horizontal axis running left-right through the camera)
     const pitchAngle = -deltaY * MOUSE_SENSITIVITY;
@@ -468,7 +220,6 @@ function rotateCamera(deltaX, deltaY) {
     // when looking straight up or down and trying to yaw.
     camera.rotation.order = 'YXZ';
 }
-
 
 function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -494,4 +245,3 @@ init().catch(err => {
     errorMessage.style.display = 'block';
     errorMessage.querySelector('p').textContent = `Error: ${err.message || 'An unknown error occurred during initialization.'}`;
 });
-
